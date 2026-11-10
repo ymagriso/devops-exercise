@@ -15,7 +15,9 @@ The infrastructure is optimized to run within the boundaries of the $300 GCP Fre
 - [Prerequisites](#prerequisites)
 - [1. Authenticate and Configure GCP](#1-authenticate-and-configure-gcp)
 - [2. Provision the Infrastructure](#2-provision-the-infrastructure)
-- [3. Enable Secure Access (IAP)](#3-enable-secure-access-iap)
+- [3. Enable Secure Access (IAP) and Outbound Internet (Cloud NAT)](#3-enable-secure-access-iap-and-outbound-internet-cloud-nat)
+  - [Step 3a: Allow Inbound SSH from IAP](#step-3a-allow-inbound-ssh-from-iap)
+  - [Step 3b: Enable Outbound Internet via Cloud NAT](#step-3b-enable-outbound-internet-via-cloud-nat)
 - [4. Install RKE2 with Cilium (HA Control Plane)](#4-install-rke2-with-cilium-ha-control-plane)
   - [Step 4a: Initialize the First Node](#step-4a-initialize-the-first-node)
   - [Step 4b: Join Nodes 2 and 3](#step-4b-join-nodes-2-and-3)
@@ -119,9 +121,15 @@ gcloud compute instances bulk create \
     --create-disk=boot=yes,image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud,size=50GB,type=pd-standard
 ```
 
-## 3. Enable Secure Access (IAP)
+## 3. Enable Secure Access (IAP) and Outbound Internet (Cloud NAT)
 
-Since the VMs do not have external IPs, create a firewall rule to allow SSH traffic from Google's Identity-Aware Proxy (IAP) IP range.
+Because the VMs are provisioned without external IP addresses (`--network-interface=no-address`), you need two networking rules:
+1. An **IAP firewall rule** for **inbound** SSH access.
+2. A **Cloud NAT** gateway for **outbound** internet access (required to download the RKE2 installer from `get.rke2.io`, release artifacts from GitHub, and Cilium/CoreDNS container images).
+
+### Step 3a: Allow Inbound SSH from IAP
+
+Create a firewall rule to allow SSH traffic from Google's Identity-Aware Proxy (IAP) IP range:
 
 ```bash
 gcloud compute firewall-rules create allow-ssh-from-iap \
@@ -129,6 +137,24 @@ gcloud compute firewall-rules create allow-ssh-from-iap \
     --action=allow \
     --rules=tcp:22 \
     --source-ranges=35.235.240.0/20
+```
+
+### Step 3b: Enable Outbound Internet via Cloud NAT
+
+Create a Cloud Router and attach a Cloud NAT gateway in `me-west1`:
+
+```bash
+# Create a Cloud Router in me-west1
+gcloud compute routers create rke2-nat-router \
+    --network=default \
+    --region=me-west1
+
+# Attach a Cloud NAT gateway to allow outbound internet traffic for private VMs
+gcloud compute routers nats create rke2-nat-config \
+    --router=rke2-nat-router \
+    --region=me-west1 \
+    --auto-allocate-nat-external-ips \
+    --nat-all-subnet-ip-ranges
 ```
 
 ## 4. Install RKE2 with Cilium (HA Control Plane)
@@ -151,7 +177,7 @@ echo -e "cni: cilium" | sudo tee /etc/rancher/rke2/config.yaml
 Install and start RKE2:
 
 ```bash
-curl -sfL https://get.rke2.io | sh -
+curl -sfL https://get.rke2.io | sudo sh -
 sudo systemctl enable --now rke2-server.service
 ```
 
@@ -191,7 +217,7 @@ cni: cilium
 Install and start the RKE2 server component:
 
 ```bash
-curl -sfL https://get.rke2.io | sh -
+curl -sfL https://get.rke2.io | sudo sh -
 sudo systemctl enable --now rke2-server.service
 ```
 
@@ -262,10 +288,17 @@ gcloud compute instances list --filter="name~'^rke2-node-'"
 
 ### Delete the Cluster (Full Cleanup)
 
-To permanently remove the VMs and their attached persistent disks (which are configured with `autoDelete: true` by default) so no storage charges remain:
+To permanently remove the VMs, their attached persistent disks (which are configured with `autoDelete: true` by default), the Cloud NAT router, and the firewall rule so no charges remain:
 
 ```bash
+# Delete the 3 VMs and their boot disks
 gcloud compute instances delete rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-west1-a
+
+# Delete the Cloud Router (and its attached Cloud NAT configuration)
+gcloud compute routers delete rke2-nat-router --region=me-west1
+
+# Delete the IAP SSH firewall rule
+gcloud compute firewall-rules delete allow-ssh-from-iap
 ```
 
 Verify that all disks have been removed:
