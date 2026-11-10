@@ -20,7 +20,10 @@ The infrastructure is optimized to run within the boundaries of the $300 GCP Fre
   - [Step 4a: Initialize the First Node](#step-4a-initialize-the-first-node)
   - [Step 4b: Join Nodes 2 and 3](#step-4b-join-nodes-2-and-3)
 - [5. Configure Local Kubectl Access](#5-configure-local-kubectl-access)
-- [Cost Management Tip](#cost-management-tip)
+- [Cost Management Tip: Stopping and Starting the Cluster](#cost-management-tip-stopping-and-starting-the-cluster)
+  - [Stop the Instances](#stop-the-instances)
+  - [Start the Instances](#start-the-instances)
+  - [Check Instance Status](#check-instance-status)
 
 ## Why RKE2?
 
@@ -226,12 +229,32 @@ kubectl get nodes
 
 You should see all 3 nodes listed with the `control-plane,etcd,master` roles.
 
-## Cost Management Tip
+## Cost Management Tip: Stopping and Starting the Cluster
 
-To stretch your $300 free trial, shut down the instances when you are not actively using the cluster:
+To stretch your $300 free trial, shut down the instances when you are not actively using the cluster and start them back up when needed.
+
+### Stop the Instances
 
 ```bash
 gcloud compute instances stop rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-west1-a
 ```
 
 *Note: You will still incur a small persistent disk storage fee (~$6.75/month total in `me-west1`) while the VMs are stopped.*
+
+### Start the Instances
+
+Because `rke2-server.service` was enabled with `systemctl enable` and GCP preserves each VM's internal IP address across stops/starts, starting the instances automatically brings the RKE2 cluster back online:
+
+```bash
+gcloud compute instances start rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-west1-a
+```
+
+Once the VMs are running, re-open the IAP port-forwarding tunnel from [Step 5](#5-configure-local-kubectl-access) to resume using `kubectl`.
+
+### Check Instance Status
+
+Verify whether the nodes are `RUNNING` or `TERMINATED`:
+
+```bash
+gcloud compute instances list --filter="name~'^rke2-node-'"
+```
