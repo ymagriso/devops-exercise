@@ -167,11 +167,14 @@ SSH into `rke2-node-1` using IAP:
 gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a
 ```
 
-Configure RKE2 to use Cilium as the CNI before installing:
+Configure RKE2 to use Cilium as the CNI and set the short hostname as `node-name` before installing (GCP's default internal FQDN `<vm>.<zone>.c.<project-id>.internal` can exceed Kubernetes's 63-byte label limit):
 
 ```bash
 sudo mkdir -p /etc/rancher/rke2
-echo -e "cni: cilium" | sudo tee /etc/rancher/rke2/config.yaml
+sudo tee /etc/rancher/rke2/config.yaml <<EOF
+node-name: $(hostname -s)
+cni: cilium
+EOF
 ```
 
 Install and start RKE2:
@@ -199,19 +202,16 @@ SSH into the node:
 gcloud compute ssh rke2-node-2 --tunnel-through-iap --zone=me-west1-a
 ```
 
-Create the RKE2 configuration file to point to the first node and set the CNI (replace `<INTERNAL_IP_OF_NODE_1>` and `<TOKEN>`):
+Create the RKE2 configuration file to point to the first node, set the short `node-name`, and configure the CNI (replace `<INTERNAL_IP_OF_NODE_1>` and `<TOKEN>`):
 
 ```bash
 sudo mkdir -p /etc/rancher/rke2
-sudo nano /etc/rancher/rke2/config.yaml
-```
-
-Paste the following into `config.yaml`:
-
-```yaml
+sudo tee /etc/rancher/rke2/config.yaml <<EOF
+node-name: $(hostname -s)
 server: https://<INTERNAL_IP_OF_NODE_1>:9345
 token: <TOKEN>
 cni: cilium
+EOF
 ```
 
 Install and start the RKE2 server component:
