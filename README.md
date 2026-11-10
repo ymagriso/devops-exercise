@@ -16,7 +16,7 @@ The infrastructure is optimized to run within the boundaries of the $300 GCP Fre
 - [1. Authenticate and Configure GCP](#1-authenticate-and-configure-gcp)
 - [2. Provision the Infrastructure](#2-provision-the-infrastructure)
 - [3. Enable Secure Access (IAP) and Outbound Internet (Cloud NAT)](#3-enable-secure-access-iap-and-outbound-internet-cloud-nat)
-  - [Step 3a: Allow Inbound SSH from IAP](#step-3a-allow-inbound-ssh-from-iap)
+  - [Step 3a: Allow Inbound SSH and Kubernetes API from IAP](#step-3a-allow-inbound-ssh-and-kubernetes-api-from-iap)
   - [Step 3b: Enable Outbound Internet via Cloud NAT](#step-3b-enable-outbound-internet-via-cloud-nat)
 - [4. Install RKE2 with Cilium (HA Control Plane)](#4-install-rke2-with-cilium-ha-control-plane)
   - [Step 4a: Initialize the First Node](#step-4a-initialize-the-first-node)
@@ -124,18 +124,18 @@ gcloud compute instances bulk create \
 ## 3. Enable Secure Access (IAP) and Outbound Internet (Cloud NAT)
 
 Because the VMs are provisioned without external IP addresses (`--network-interface=no-address`), you need two networking rules:
-1. An **IAP firewall rule** for **inbound** SSH access.
+1. An **IAP firewall rule** for **inbound** SSH (`tcp:22`) and Kubernetes API (`tcp:6443`) access through the IAP tunnel.
 2. A **Cloud NAT** gateway for **outbound** internet access (required to download the RKE2 installer from `get.rke2.io`, release artifacts from GitHub, and Cilium/CoreDNS container images).
 
-### Step 3a: Allow Inbound SSH from IAP
+### Step 3a: Allow Inbound SSH and Kubernetes API from IAP
 
-Create a firewall rule to allow SSH traffic from Google's Identity-Aware Proxy (IAP) IP range:
+Create a firewall rule to allow SSH (`tcp:22`) and Kubernetes API (`tcp:6443`) traffic from Google's Identity-Aware Proxy (IAP) IP range:
 
 ```bash
 gcloud compute firewall-rules create allow-ssh-from-iap \
     --direction=INGRESS \
     --action=allow \
-    --rules=tcp:22 \
+    --rules=tcp:22,tcp:6443 \
     --source-ranges=35.235.240.0/20
 ```
 
