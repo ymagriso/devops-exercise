@@ -4,6 +4,24 @@ This repository contains the instructions for deploying a highly available, 3-no
 
 The infrastructure is optimized to run within the boundaries of the $300 GCP Free Trial by utilizing Identity-Aware Proxy (IAP) instead of public external IPs, and deploying all 3 nodes symmetrically as both control plane and worker nodes. It also configures **Cilium** as the CNI for high performance and low latency, which is ideal for stateful workloads like MongoDB.
 
+## Table of Contents
+
+- [Why RKE2?](#why-rke2)
+- [Why Cilium CNI?](#why-cilium-cni)
+- [Regional Cost & Latency Comparison](#regional-cost--latency-comparison)
+  - ["Always Free" Tier vs. $300 Free Trial Credits](#always-free-tier-vs-300-free-trial-credits)
+  - [Cost Breakdown Across Regions (Full 3-Node Cluster)](#cost-breakdown-across-regions-full-3-node-cluster)
+  - [Practical Impact & Choosing a Closer Region](#practical-impact--choosing-a-closer-region)
+- [Prerequisites](#prerequisites)
+- [1. Authenticate and Configure GCP](#1-authenticate-and-configure-gcp)
+- [2. Provision the Infrastructure](#2-provision-the-infrastructure)
+- [3. Enable Secure Access (IAP)](#3-enable-secure-access-iap)
+- [4. Install RKE2 with Cilium (HA Control Plane)](#4-install-rke2-with-cilium-ha-control-plane)
+  - [Step 4a: Initialize the First Node](#step-4a-initialize-the-first-node)
+  - [Step 4b: Join Nodes 2 and 3](#step-4b-join-nodes-2-and-3)
+- [5. Configure Local Kubectl Access](#5-configure-local-kubectl-access)
+- [Cost Management Tip](#cost-management-tip)
+
 ## Why RKE2?
 
 Before starting, it is helpful to understand why RKE2 was selected over Rancher's other distributions (RKE and K3s).
@@ -30,6 +48,38 @@ RKE2 natively bundles several Container Network Interfaces (CNIs). For this spec
 | **Cilium** | eBPF | High (Low Latency) | Low | **Selected.** Bypasses traditional `iptables` overhead, significantly reducing network latency for database replication while freeing up RAM for your application. | 
 | **Calico** | BGP (iptables) | Very Good | Moderate | Strong alternative with excellent security, but its native eBPF mode requires extra configuration outside of the RKE2 defaults. | 
 | **Canal** | VXLAN (iptables) | Moderate | Low | RKE2 Default. The VXLAN encapsulation/de-encapsulation adds network overhead that is not ideal for heavy database workloads. | 
+
+## Regional Cost & Latency Comparison
+
+While the commands below default to `us-central1-a` (Iowa, USA), you can deploy this cluster in a region closer to your location by replacing the `--zone` flag. Before choosing a region, consider how GCP billing works with the Free Trial and how regional pricing affects your $300 credit.
+
+### "Always Free" Tier vs. $300 Free Trial Credits
+
+* **GCP "Always Free" Tier (US-only):** Only covers **1 × `e2-micro`** VM and **30 GB of `pd-standard` disk** in `us-central1`, `us-west1`, or `us-east1`.
+* **$300 Free Trial Credits (Global):** Can be spent in **any GCP region**.
+
+Because this architecture provisions **3 × `e2-standard-2`** VMs (2 vCPUs, 8 GB RAM each) and **150 GB total disk** (3 × 50 GB `pd-standard`), it draws from your **$300 Free Trial credits** rather than the Always Free tier. Deploying outside the US only forfeits the 30 GB Always Free disk allowance (worth **~$1.20/month**).
+
+### Cost Breakdown Across Regions (Full 3-Node Cluster)
+
+Estimated costs for **3 × `e2-standard-2` VMs + 150 GB `pd-standard` disk** (with `--network-interface=no-address`, so $0 for external IPs):
+
+| Region | Location | 3 VMs Hourly | 3 VMs (24/7 Month) | 150 GB Disk / Month (even when stopped) | Total 24/7 Monthly | Total Runtime on $300 Credit |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **`us-central1`** *(default)* | Iowa, USA | ~$0.201 / hr | ~$146.76 | ~$4.80 *(120 GB billed)* | **~$151.56 / mo** | ~1,450 hours (~60 days 24/7) |
+| **`me-west1`** | Tel Aviv, Israel | ~$0.221 / hr | ~$161.43 | ~$6.75 | **~$168.18 / mo** | ~1,310 hours (~54 days 24/7) |
+| **`europe-west1` / `west4`** | Belgium / Netherlands | ~$0.221 / hr | ~$161.43 | ~$6.00 | **~$167.43 / mo** | ~1,315 hours (~55 days 24/7) |
+| **`europe-west3`** | Frankfurt, Germany | ~$0.259 / hr | ~$189.06 | ~$7.20 | **~$196.26 / mo** | ~1,115 hours (~46 days 24/7) |
+
+### Practical Impact & Choosing a Closer Region
+
+1. **Minimal Cost Difference (~10%):**
+   * Choosing `me-west1` (Tel Aviv) or `europe-west1` (Belgium) over `us-central1` costs **~$0.02/hour more** for the entire 3-node cluster (~$0.16 extra for an 8-hour work session).
+   * When the VMs are **stopped**, you only pay for the 150 GB persistent disks (~$6.00–$6.75/month vs. ~$4.80/month in `us-central1`).
+2. **Much Lower IAP Tunnel Latency:**
+   * Because all `ssh` and `kubectl` commands are routed through an **Identity-Aware Proxy (IAP) TCP tunnel**, deploying in a nearby region cuts round-trip latency from ~150–180 ms down to ~5–50 ms, making interactive SSH and `kubectl` noticeably more responsive.
+3. **Free Trial Quota Check:**
+   * Free trial accounts typically have an **8 vCPU per-region quota** by default. Since 3 × `e2-standard-2` uses **6 vCPUs**, the cluster fits within the default regional quota in whichever region you choose.
 
 ## Prerequisites
 
