@@ -51,7 +51,7 @@ RKE2 natively bundles several Container Network Interfaces (CNIs). For this spec
 
 ## Regional Cost & Latency Comparison
 
-While the commands below default to `us-central1-a` (Iowa, USA), you can deploy this cluster in a region closer to your location by replacing the `--zone` flag. Before choosing a region, consider how GCP billing works with the Free Trial and how regional pricing affects your $300 credit.
+The steps below use **`me-west1` (`me-west1-a`, Tel Aviv, Israel)** as the recommended region for low IAP tunnel latency with only a minor cost difference (~10% compared to US regions). You can replace the `--zone` flag with any region closer to your location. Below is how GCP billing works with the Free Trial and how regional pricing affects your $300 credit.
 
 ### "Always Free" Tier vs. $300 Free Trial Credits
 
@@ -66,8 +66,8 @@ Estimated costs for **3 × `e2-standard-2` VMs + 150 GB `pd-standard` disk** (wi
 
 | Region | Location | 3 VMs Hourly | 3 VMs (24/7 Month) | 150 GB Disk / Month (even when stopped) | Total 24/7 Monthly | Total Runtime on $300 Credit |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`us-central1`** *(default)* | Iowa, USA | ~$0.201 / hr | ~$146.76 | ~$4.80 *(120 GB billed)* | **~$151.56 / mo** | ~1,450 hours (~60 days 24/7) |
-| **`me-west1`** | Tel Aviv, Israel | ~$0.221 / hr | ~$161.43 | ~$6.75 | **~$168.18 / mo** | ~1,310 hours (~54 days 24/7) |
+| **`me-west1`** *(recommended)* | Tel Aviv, Israel | ~$0.221 / hr | ~$161.43 | ~$6.75 | **~$168.18 / mo** | ~1,310 hours (~54 days 24/7) |
+| **`us-central1`** | Iowa, USA | ~$0.201 / hr | ~$146.76 | ~$4.80 *(120 GB billed)* | **~$151.56 / mo** | ~1,450 hours (~60 days 24/7) |
 | **`europe-west1` / `west4`** | Belgium / Netherlands | ~$0.221 / hr | ~$161.43 | ~$6.00 | **~$167.43 / mo** | ~1,315 hours (~55 days 24/7) |
 | **`europe-west3`** | Frankfurt, Germany | ~$0.259 / hr | ~$189.06 | ~$7.20 | **~$196.26 / mo** | ~1,115 hours (~46 days 24/7) |
 
@@ -77,7 +77,7 @@ Estimated costs for **3 × `e2-standard-2` VMs + 150 GB `pd-standard` disk** (wi
    * Choosing `me-west1` (Tel Aviv) or `europe-west1` (Belgium) over `us-central1` costs **~$0.02/hour more** for the entire 3-node cluster (~$0.16 extra for an 8-hour work session).
    * When the VMs are **stopped**, you only pay for the 150 GB persistent disks (~$6.00–$6.75/month vs. ~$4.80/month in `us-central1`).
 2. **Much Lower IAP Tunnel Latency:**
-   * Because all `ssh` and `kubectl` commands are routed through an **Identity-Aware Proxy (IAP) TCP tunnel**, deploying in a nearby region cuts round-trip latency from ~150–180 ms down to ~5–50 ms, making interactive SSH and `kubectl` noticeably more responsive.
+   * Because all `ssh` and `kubectl` commands are routed through an **Identity-Aware Proxy (IAP) TCP tunnel**, deploying in a nearby region (`me-west1`) cuts round-trip latency from ~150–180 ms down to ~5–50 ms, making interactive SSH and `kubectl` noticeably more responsive.
 3. **Free Trial Quota Check:**
    * Free trial accounts typically have an **8 vCPU per-region quota** by default. Since 3 × `e2-standard-2` uses **6 vCPUs**, the cluster fits within the default regional quota in whichever region you choose.
 
@@ -102,14 +102,14 @@ gcloud config set project YOUR_PROJECT_ID
 
 ## 2. Provision the Infrastructure
 
-Create three `e2-standard-2` instances running Ubuntu 24.04.
+Create three `e2-standard-2` instances running Ubuntu 24.04 in `me-west1-a`.
 *To save costs (approx $11/month), these VMs are provisioned **without** external IP addresses.*
 
 ```bash
 gcloud compute instances bulk create \
     --name-pattern="rke2-node-#" \
     --count=3 \
-    --zone=us-central1-a \
+    --zone=me-west1-a \
     --machine-type=e2-standard-2 \
     --network-interface=no-address \
     --create-disk=image-family=ubuntu-2404-lts,image-project=ubuntu-os-cloud,size=50GB,type=pd-standard
@@ -134,7 +134,7 @@ gcloud compute firewall-rules create allow-ssh-from-iap \
 SSH into `rke2-node-1` using IAP:
 
 ```bash
-gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=us-central1-a
+gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a
 ```
 
 Configure RKE2 to use Cilium as the CNI before installing:
@@ -166,7 +166,7 @@ Repeat the following process for **both** `rke2-node-2` and `rke2-node-3`.
 SSH into the node:
 
 ```bash
-gcloud compute ssh rke2-node-2 --tunnel-through-iap --zone=us-central1-a
+gcloud compute ssh rke2-node-2 --tunnel-through-iap --zone=me-west1-a
 ```
 
 Create the RKE2 configuration file to point to the first node and set the CNI (replace `<INTERNAL_IP_OF_NODE_1>` and `<TOKEN>`):
@@ -199,12 +199,12 @@ Because the cluster is private, route your local `kubectl` traffic through an IA
 
 ```bash
 # Securely copy file from root to user on VM
-gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=us-central1-a \
+gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a \
     --command="sudo cp /etc/rancher/rke2/rke2.yaml ~/.kubeconfig && sudo chown \$(whoami) ~/.kubeconfig"
 
 # Download file to local machine
 gcloud compute scp rke2-node-1:~/.kubeconfig ./rke2-kubeconfig.yaml \
-    --tunnel-through-iap --zone=us-central1-a
+    --tunnel-through-iap --zone=me-west1-a
 ```
 
 **2. Open the IAP Port Forwarding Tunnel:**
@@ -213,7 +213,7 @@ gcloud compute scp rke2-node-1:~/.kubeconfig ./rke2-kubeconfig.yaml \
 ```bash
 gcloud compute start-iap-tunnel rke2-node-1 6443 \
     --local-host-port=localhost:6443 \
-    --zone=us-central1-a
+    --zone=me-west1-a
 ```
 
 **3. Test the connection:**
@@ -231,7 +231,7 @@ You should see all 3 nodes listed with the `control-plane,etcd,master` roles.
 To stretch your $300 free trial, shut down the instances when you are not actively using the cluster:
 
 ```bash
-gcloud compute instances stop rke2-node-1 rke2-node-2 rke2-node-3 --zone=us-central1-a
+gcloud compute instances stop rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-west1-a
 ```
 
-*Note: You will still incur a small persistent disk storage fee (~$6.00/month total) while the VMs are stopped.*
+*Note: You will still incur a small persistent disk storage fee (~$6.75/month total in `me-west1`) while the VMs are stopped.*
