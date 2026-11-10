@@ -24,6 +24,7 @@ The infrastructure is optimized to run within the boundaries of the $300 GCP Fre
   - [Stop the Instances](#stop-the-instances)
   - [Start the Instances](#start-the-instances)
   - [Check Instance Status](#check-instance-status)
+  - [Delete the Cluster (Full Cleanup)](#delete-the-cluster-full-cleanup)
 
 ## Why RKE2?
 
@@ -115,7 +116,7 @@ gcloud compute instances bulk create \
     --zone=me-west1-a \
     --machine-type=e2-standard-2 \
     --network-interface=no-address \
-    --create-disk=image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud,size=50GB,type=pd-standard
+    --create-disk=boot=yes,image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud,size=50GB,type=pd-standard
 ```
 
 ## 3. Enable Secure Access (IAP)
@@ -257,4 +258,18 @@ Verify whether the nodes are `RUNNING` or `TERMINATED`:
 
 ```bash
 gcloud compute instances list --filter="name~'^rke2-node-'"
+```
+
+### Delete the Cluster (Full Cleanup)
+
+To permanently remove the VMs and their attached persistent disks (which are configured with `autoDelete: true` by default) so no storage charges remain:
+
+```bash
+gcloud compute instances delete rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-west1-a
+```
+
+Verify that all disks have been removed:
+
+```bash
+gcloud compute disks list
 ```
