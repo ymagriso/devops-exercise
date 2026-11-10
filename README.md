@@ -115,7 +115,7 @@ gcloud compute instances bulk create \
     --zone=me-west1-a \
     --machine-type=e2-standard-2 \
     --network-interface=no-address \
-    --create-disk=image-family=ubuntu-2404-lts,image-project=ubuntu-os-cloud,size=50GB,type=pd-standard
+    --create-disk=image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud,size=50GB,type=pd-standard
 ```
 
 ## 3. Enable Secure Access (IAP)
