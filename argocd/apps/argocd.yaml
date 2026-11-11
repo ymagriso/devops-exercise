@@ -19,6 +19,17 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
+  ignoreDifferences:
+    - group: ""
+      kind: ConfigMap
+      name: argocd-cm
+      jsonPointers:
+        - /data/url
+    - group: ""
+      kind: ConfigMap
+      name: argocd-rbac-cm
+      jsonPointers:
+        - /data/policy.csv
   syncPolicy:
     automated:
       prune: true
@@ -26,3 +37,4 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true

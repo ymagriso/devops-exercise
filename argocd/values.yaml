@@ -1,6 +1,11 @@
 # Helm values for argo/argo-cd (Standard single-replica profile)
 # Chart repository: https://argoproj.github.io/argo-helm
 
+global:
+  # Left empty in Git so `url` is omitted from the rendered argocd-cm ConfigMap
+  # and can be patched out-of-band on the cluster without exposing your domain in Git.
+  domain: ""
+
 crds:
   install: true
   keep: true
@@ -11,6 +16,29 @@ dex:
 
 notifications:
   enabled: false
+
+configs:
+  cm:
+    # Disable the built-in local admin account in favor of Google OIDC
+    admin.enabled: false
+    url: ""
+    oidc.config: |
+      name: Google
+      issuer: https://accounts.google.com
+      clientID: $argocd-google-oidc:clientID
+      clientSecret: $argocd-google-oidc:clientSecret
+      requestedScopes:
+        - openid
+        - profile
+        - email
+
+  rbac:
+    # Deny access by default to any Google account not explicitly listed in policy.csv
+    policy.default: ""
+    # Set to null in Git so `policy.csv` is omitted from the rendered argocd-rbac-cm ConfigMap
+    # and can be patched out-of-band on the cluster without exposing your email in Git.
+    policy.csv: null
+    scopes: "[email]"
 
 controller:
   replicas: 1
