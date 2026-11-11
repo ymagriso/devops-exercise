@@ -11,6 +11,12 @@ on:
         options:
           - apply
           - plan
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "tofu/**"
+      - ".github/workflows/tofu-apply.yml"
   push:
     branches:
       - main
@@ -31,30 +37,31 @@ jobs:
     name: "OpenTofu Plan/Apply & Bootstrap"
     runs-on: ubuntu-latest
     env:
-      ACTION: ${{ github.event.inputs.action || 'apply' }}
+      ACTION: ${{ github.event_name == 'pull_request' && 'plan' || github.event.inputs.action || 'apply' }}
       TF_IN_AUTOMATION: "1"
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Authenticate to Google Cloud (WIF)
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3.0.1
 
       - name: Set up OpenTofu
-        uses: opentofu/setup-opentofu@v1
+        uses: opentofu/setup-opentofu@v2.0.2
         with:
           tofu_version: "1.13.9"
 
-      - name: OpenTofu Init & Validate
+      - name: OpenTofu Init & Format / Validate
         run: |
           cd tofu
+          tofu fmt -check
           tofu init
           tofu validate
 
@@ -68,14 +75,14 @@ jobs:
 
       - name: OpenTofu Apply
         id: apply
-        if: env.ACTION == 'apply'
+        if: env.ACTION == 'apply' && github.event_name != 'pull_request'
         run: |
           PROJECT_ID=$(gcloud config get-value project)
           cd tofu
           tofu apply -auto-approve -var="project_id=${PROJECT_ID}"
 
       - name: Wait for Cluster Bootstrap & Retrieve Kubeconfig
-        if: env.ACTION == 'apply'
+        if: env.ACTION == 'apply' && github.event_name != 'pull_request'
         run: |
           echo "Waiting for rke2-node-1 to finish initialization..."
           for i in {1..40}; do
@@ -100,7 +107,7 @@ jobs:
           kubectl get nodes -o wide
 
       - name: Inject Kubernetes Secrets & Configure Domain
-        if: env.ACTION == 'apply'
+        if: env.ACTION == 'apply' && github.event_name != 'pull_request'
         env:
           KUBECONFIG: ${{ github.workspace }}/rke2-kubeconfig.yaml
           CUSTOM_DOMAIN: ${{ secrets.CUSTOM_DOMAIN }}
