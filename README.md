@@ -31,6 +31,7 @@ The infrastructure is optimized to run within the boundaries of the $300 GCP Fre
   - [Step 7b: Issue a Let's Encrypt TLS Certificate for Argo CD](#step-7b-issue-a-lets-encrypt-tls-certificate-for-argo-cd)
   - [Step 7c: Configure the Cloudflare Tunnel Secret and Public Hostname](#step-7c-configure-the-cloudflare-tunnel-secret-and-public-hostname)
   - [Step 7d: Bootstrap GitOps (Root App-of-Apps)](#step-7d-bootstrap-gitops-root-app-of-apps)
+  - [Step 7e: Configure Google OIDC Authentication (Disable Default Admin)](#step-7e-configure-google-oidc-authentication-disable-default-admin)
 - [Cost Management Tip: Stopping and Starting the Cluster](#cost-management-tip-stopping-and-starting-the-cluster)
   - [Stop the Instances](#stop-the-instances)
   - [Start the Instances](#start-the-instances)
@@ -400,7 +401,43 @@ kubectl get applications -n argocd
 kubectl get pods -n cloudflared
 ```
 
-You can now access the Argo CD UI directly in your browser at `https://argocd.<your-domain>` (logging in with username `admin` and the password from Step 7a).
+You can now access the Argo CD UI directly in your browser at `https://argocd.<your-domain>`.
+
+### Step 7e: Configure Google OIDC Authentication (Disable Default Admin)
+
+[`argocd/values.yaml`](argocd/values.yaml) disables the built-in local `admin` user (`admin.enabled: false`) and configures native OpenID Connect (OIDC) authentication against Google (`https://accounts.google.com`).
+
+1. **Create a Google OAuth 2.0 Client in GCP Console** (*APIs & Services → Credentials*):
+   * Configure the **OAuth consent screen** (External or Internal) and add your Google account under **Test users**.
+   * Click **Create Credentials → OAuth client ID**:
+     * **Application type:** `Web application`
+     * **Authorized redirect URIs:**
+       * `https://argocd.<your-domain>/auth/callback`
+       * `http://localhost:8085/auth/callback` *(optional, for `argocd login --sso` CLI)*
+2. **Store the OAuth Client ID and Secret in Kubernetes** (labeled with `app.kubernetes.io/part-of=argocd` so Argo CD can read `$argocd-google-oidc:clientID` and `$argocd-google-oidc:clientSecret`):
+
+```bash
+kubectl create secret generic argocd-google-oidc \
+    -n argocd \
+    --from-literal=clientID='<GOOGLE_CLIENT_ID>' \
+    --from-literal=clientSecret='<GOOGLE_CLIENT_SECRET>'
+
+kubectl label secret argocd-google-oidc -n argocd app.kubernetes.io/part-of=argocd
+```
+
+3. **Set your Argo CD URL and RBAC Admin Email in-cluster** (kept out of Git and preserved across syncs via `ignoreDifferences` in [`argocd/apps/argocd.yaml`](argocd/apps/argocd.yaml)):
+
+```bash
+# Set the external URL on argocd-cm for OIDC redirect callbacks
+kubectl patch configmap argocd-cm -n argocd \
+    --type merge \
+    -p '{"data":{"url":"https://argocd.YOUR_ACTUAL_DOMAIN"}}'
+
+# Grant role:admin to your Google account email on argocd-rbac-cm
+kubectl patch configmap argocd-rbac-cm -n argocd \
+    --type merge \
+    -p '{"data":{"policy.csv":"g, YOUR_GOOGLE_EMAIL, role:admin"}}'
+```
 
 ## Cost Management Tip: Stopping and Starting the Cluster
 
