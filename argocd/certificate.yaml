@@ -1,0 +1,14 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: argocd-server-tls
+  namespace: argocd
+spec:
+  # argocd-server automatically mounts the argocd-server-tls Secret for HTTPS on port 443
+  secretName: argocd-server-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    # Replace with your actual domain before applying (or via sed)
+    - argocd.yourdomain.com
