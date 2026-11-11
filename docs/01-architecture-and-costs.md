@@ -127,12 +127,12 @@ Because this architecture provisions **3 × `e2-standard-2`** VMs (2 vCPUs, 8 GB
 
 Estimated costs for **3 × `e2-standard-2` VMs + 150 GB `pd-standard` disk** (with `--network-interface=no-address`, so $0 for external IPs):
 
-| Region | Location | 3 VMs Hourly | 3 VMs (24/7 Month) | 150 GB Disk / Month (even when stopped) | Total 24/7 Monthly | Total Runtime on $300 Credit |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`me-west1`** *(recommended)* | Tel Aviv, Israel | ~$0.221 / hr | ~$161.43 | ~$6.75 | **~$168.18 / mo** | ~1,310 hours (~54 days 24/7) |
-| **`us-central1`** | Iowa, USA | ~$0.201 / hr | ~$146.76 | ~$4.80 *(120 GB billed)* | **~$151.56 / mo** | ~1,450 hours (~60 days 24/7) |
-| **`europe-west1` / `west4`** | Belgium / Netherlands | ~$0.221 / hr | ~$161.43 | ~$6.00 | **~$167.43 / mo** | ~1,315 hours (~55 days 24/7) |
-| **`europe-west3`** | Frankfurt, Germany | ~$0.259 / hr | ~$189.06 | ~$7.20 | **~$196.26 / mo** | ~1,115 hours (~46 days 24/7) |
+| Region | Location | 3 VMs Hourly | 3 VMs (24/7 Month) | 150 GB Disk / Month (even when stopped) | Total 24/7 Monthly | Total 12h/Day Monthly | Total Runtime on $300 Credit (24/7 vs. 12h/Day) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **`me-west1`** *(recommended)* | Tel Aviv, Israel | ~$0.221 / hr | ~$161.43 | ~$6.75 | **~$168.18 / mo** | **~$87.47 / mo** | **24/7:** ~54 days (~1,310 hrs)<br>**12h/day:** **~104 days** *(covers full 90-day trial + ~$41 left)* |
+| **`us-central1`** | Iowa, USA | ~$0.201 / hr | ~$146.76 | ~$4.80 *(120 GB billed)* | **~$151.56 / mo** | **~$78.18 / mo** | **24/7:** ~60 days (~1,450 hrs)<br>**12h/day:** **~116 days** *(covers full 90-day trial + ~$68 left)* |
+| **`europe-west1` / `west4`** | Belgium / Netherlands | ~$0.221 / hr | ~$161.43 | ~$6.00 | **~$167.43 / mo** | **~$86.72 / mo** | **24/7:** ~55 days (~1,315 hrs)<br>**12h/day:** **~105 days** *(covers full 90-day trial + ~$43 left)* |
+| **`europe-west3`** | Frankfurt, Germany | ~$0.259 / hr | ~$189.06 | ~$7.20 | **~$196.26 / mo** | **~$101.73 / mo** | **24/7:** ~46 days (~1,115 hrs)<br>**12h/day:** **~89 days** *(covers nearly full 90-day trial)* |
 
 ### Practical Impact & Choosing a Closer Region
 
