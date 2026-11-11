@@ -31,6 +31,7 @@ This repository uses the [**Mend Renovate**](https://developer.mend.io) GitHub A
 To protect the GitOps cluster against supply-chain compromises and unstable "Day-0" upstream releases:
 * **3-Day Default Cooldown (`"minimumReleaseAge": "3 days"`):** Patch and minor Helm chart or Docker image updates must soak upstream for at least 3 days before Renovate opens a PR.
 * **7-Day Major Release Cooldown (`matchUpdateTypes: ["major"]`):** Major version upgrades require a 7-day cooldown window to allow early upstream hotfixes (`.1` / `.2`) to settle.
+* **Pinned Major Series for MongoDB (`registry-1.docker.io/bitnamicharts/mongodb`):** Major chart updates (`17.x+`, which target MongoDB `8.2`/`9.0` and `:latest` tags) are disabled (`enabled: false`) so the chart remains aligned with the pinned MongoDB `8.0.13` (`16.x`) release.
 * **PR Rate Limits (`prHourlyLimit: 2`, `prConcurrentLimit: 5`):** Prevents PR spam while automatically tagging PRs with `helm` / `docker` and `dependencies` labels.
 
 ---
