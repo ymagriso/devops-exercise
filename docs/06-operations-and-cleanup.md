@@ -1,8 +1,8 @@
-[← Back to Main README](../README.md) | [← Previous: Argo CD, Cloudflare Tunnel & Google OIDC](04-argocd-cloudflare-oidc.md)
+[← Back to Main README](../README.md) | [← Previous: MongoDB ReplicaSet & Metrics](05-mongodb-replicaset-and-metrics.md)
 
 ---
 
-# 5. Cluster Operations & Cost Management
+# 6. Cluster Operations & Cost Management
 
 - [Stop the Instances](#stop-the-instances)
 - [Start the Instances](#start-the-instances)
@@ -62,4 +62,4 @@ gcloud compute disks list
 
 ---
 
-[← Back to Main README](../README.md) | [← Previous: Argo CD, Cloudflare Tunnel & Google OIDC](04-argocd-cloudflare-oidc.md)
+[← Back to Main README](../README.md) | [← Previous: MongoDB ReplicaSet & Metrics](05-mongodb-replicaset-and-metrics.md)

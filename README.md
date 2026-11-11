@@ -18,12 +18,14 @@ flowchart LR
             CFD["cloudflared (2 replicas)"]
             Argo["Argo CD (Self-Managed)"]
             CM["cert-manager (Let's Encrypt DNS-01)"]
+            Mongo["MongoDB 8.0.13 (3-Node ReplicaSet + Metrics)"]
         end
     end
     GH["GitHub (ymagriso/devops-exercise)"]
 
     CFD -->|"Outbound Tunnel"| NAT --> CF
     CFD -->|"Strict HTTPS (:443)"| Argo
+    CFD -->|"TCP (:27017) & Metrics (:9216)"| Mongo
     CM -->|"Issues TLS Secret"| Argo
     Argo -->|"Syncs GitOps State"| GH
 ```
@@ -38,7 +40,8 @@ flowchart LR
 | **2** | [**GCP Infrastructure & RKE2 Cluster Setup**](docs/02-gcp-rke2-cluster-setup.md) | Provisioning the 3 private Ubuntu 24.04 VMs, IAP firewall rules, Cloud NAT, bootstrapping the HA RKE2 + Cilium cluster, and local `kubectl` access. |
 | **3** | [**`cert-manager` & Let's Encrypt (HTTPS)**](docs/03-cert-manager-letsencrypt.md) | Installing `cert-manager` via Helm and configuring `letsencrypt-staging` and `letsencrypt-prod` `ClusterIssuer` resources using Cloudflare DNS-01. |
 | **4** | [**Argo CD GitOps, Cloudflare Tunnel & Google OIDC**](docs/04-argocd-cloudflare-oidc.md) | Deploying Argo CD, issuing its Let's Encrypt certificate, exposing it via Cloudflare Tunnel (`cloudflared`), bootstrapping the Root App-of-Apps, and enabling Google OIDC login. |
-| **5** | [**Cluster Operations & Cost Management**](docs/05-operations-and-cleanup.md) | Stopping and starting the cluster VMs to conserve Free Trial credits, checking node status, and full cluster teardown. |
+| **5** | [**MongoDB ReplicaSet (`8.0.13`) & Prometheus Metrics**](docs/05-mongodb-replicaset-and-metrics.md) | Deploying a 3-node Bitnami MongoDB `8.0.13` ReplicaSet via Argo CD with explicit resource limits, Prometheus metrics exporter (`:9216`), and external access via Cloudflare Tunnel (`:27017`). |
+| **6** | [**Cluster Operations & Cost Management**](docs/06-operations-and-cleanup.md) | Stopping and starting the cluster VMs to conserve Free Trial credits, checking node status, and full cluster teardown. |
 
 ---
 
@@ -52,10 +55,13 @@ devops-exercise/
 │   ├── 02-gcp-rke2-cluster-setup.md
 │   ├── 03-cert-manager-letsencrypt.md
 │   ├── 04-argocd-cloudflare-oidc.md
-│   └── 05-operations-and-cleanup.md
+│   ├── 05-mongodb-replicaset-and-metrics.md
+│   └── 06-operations-and-cleanup.md
 ├── cert-manager/
 │   ├── values.yaml                                     # Helm values for jetstack/cert-manager
 │   └── cluster-issuers.yaml                            # Let's Encrypt Staging & Prod ClusterIssuers (DNS-01)
+├── mongodb/
+│   └── values.yaml                                     # Helm values for bitnami/mongodb (8.0.13 ReplicaSet + Metrics)
 └── argocd/
     ├── values.yaml                                     # Helm values for argo/argo-cd (Google OIDC enabled)
     ├── certificate.yaml                                # Let's Encrypt Certificate for argocd-server-tls
@@ -65,6 +71,7 @@ devops-exercise/
         ├── argocd.yaml                                 # Argo CD self-management Application
         ├── cert-manager.yaml                           # cert-manager GitOps Application
         ├── cloudflared.yaml                            # Cloudflare Tunnel GitOps Application
+        ├── mongodb.yaml                                # Bitnami MongoDB ReplicaSet GitOps Application
         └── workloads/
             └── cloudflared/
                 ├── namespace.yaml

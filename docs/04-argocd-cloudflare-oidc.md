@@ -1,4 +1,4 @@
-[← Back to Main README](../README.md) | [← Previous: cert-manager & Let's Encrypt](03-cert-manager-letsencrypt.md) | [Next: Operations & Cost Management →](05-operations-and-cleanup.md)
+[← Back to Main README](../README.md) | [← Previous: cert-manager & Let's Encrypt](03-cert-manager-letsencrypt.md) | [Next: MongoDB ReplicaSet & Metrics →](05-mongodb-replicaset-and-metrics.md)
 
 ---
 
@@ -147,4 +147,4 @@ kubectl patch configmap argocd-rbac-cm -n argocd \
 
 ---
 
-[← Back to Main README](../README.md) | [← Previous: cert-manager & Let's Encrypt](03-cert-manager-letsencrypt.md) | [Next: Operations & Cost Management →](05-operations-and-cleanup.md)
+[← Back to Main README](../README.md) | [← Previous: cert-manager & Let's Encrypt](03-cert-manager-letsencrypt.md) | [Next: MongoDB ReplicaSet & Metrics →](05-mongodb-replicaset-and-metrics.md)
