@@ -23,6 +23,16 @@
   },
   "packageRules": [
     {
+      "description": "Disable major chart upgrades for bitnamicharts/mongodb to stay aligned with MongoDB 8.0.13 (chart 16.x)",
+      "matchPackageNames": [
+        "registry-1.docker.io/bitnamicharts/mongodb"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    },
+    {
       "description": "Longer 7-day cooldown for major version upgrades",
       "matchUpdateTypes": [
         "major"
