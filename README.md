@@ -41,7 +41,7 @@ flowchart LR
 | **3** | [**`cert-manager` & Let's Encrypt (HTTPS)**](docs/03-cert-manager-letsencrypt.md) | Installing `cert-manager` via Helm and configuring `letsencrypt-staging` and `letsencrypt-prod` `ClusterIssuer` resources using Cloudflare DNS-01. |
 | **4** | [**Argo CD GitOps, Cloudflare Tunnel & Google OIDC**](docs/04-argocd-cloudflare-oidc.md) | Deploying Argo CD, issuing its Let's Encrypt certificate, exposing it via Cloudflare Tunnel (`cloudflared`), bootstrapping the Root App-of-Apps, and enabling Google OIDC login. |
 | **5** | [**MongoDB ReplicaSet (`8.0.13`) & Prometheus Metrics**](docs/05-mongodb-replicaset-and-metrics.md) | Deploying a 3-node Bitnami MongoDB `8.0.13` ReplicaSet via Argo CD with explicit resource limits, Prometheus metrics exporter (`:9216`), and external access via Cloudflare Tunnel (`:27017`). |
-| **6** | [**Cluster Operations & Cost Management**](docs/06-operations-and-cleanup.md) | Stopping and starting the cluster VMs to conserve Free Trial credits, checking node status, and full cluster teardown. |
+| **6** | [**Cluster Operations, Renovate & Cost Management**](docs/06-operations-and-cleanup.md) | Automated Helm & Docker updates with **Mend Renovate** (with 3-day/7-day cooldown), stopping/starting cluster VMs to conserve credits, and full teardown. |
 
 ---
 
@@ -50,6 +50,7 @@ flowchart LR
 ```text
 devops-exercise/
 ├── README.md                                           # Overview, architecture & documentation index
+├── renovate.json                                       # Mend Renovate configuration (Helm, K8s & cooldown rules)
 ├── docs/                                               # Modular step-by-step guides
 │   ├── 01-architecture-and-costs.md
 │   ├── 02-gcp-rke2-cluster-setup.md
