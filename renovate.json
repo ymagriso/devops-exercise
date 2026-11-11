@@ -1,0 +1,53 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "minimumReleaseAge": "3 days",
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 5,
+  "argocd": {
+    "managerFilePatterns": [
+      "/^argocd/(apps|bootstrap)/[^/]+\\.ya?ml$/"
+    ]
+  },
+  "kubernetes": {
+    "managerFilePatterns": [
+      "/^argocd/apps/workloads/.+\\.ya?ml$/"
+    ]
+  },
+  "helm-values": {
+    "managerFilePatterns": [
+      "/(^|/)values\\.ya?ml$/"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "Longer 7-day cooldown for major version upgrades",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Add labels to Helm chart updates",
+      "matchDatasources": [
+        "helm"
+      ],
+      "addLabels": [
+        "helm",
+        "dependencies"
+      ]
+    },
+    {
+      "description": "Add labels to Docker container image updates",
+      "matchDatasources": [
+        "docker"
+      ],
+      "addLabels": [
+        "docker",
+        "dependencies"
+      ]
+    }
+  ]
+}
