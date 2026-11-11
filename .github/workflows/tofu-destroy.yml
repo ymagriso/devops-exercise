@@ -1,0 +1,62 @@
+name: "OpenTofu Teardown (Destroy Cluster)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type "DESTROY" to confirm deletion of all GCP cluster resources'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: opentofu-infra
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    name: "OpenTofu Destroy"
+    runs-on: ubuntu-latest
+    if: github.event.inputs.confirmation == 'DESTROY'
+    env:
+      TF_IN_AUTOMATION: "1"
+
+    steps:
+      - name: Validate Confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirmation }}" != "DESTROY" ]; then
+            echo "Confirmation string does not match 'DESTROY'. Aborting teardown."
+            exit 1
+          fi
+          echo "Confirmation matched. Proceeding with OpenTofu destruction."
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.13.9"
+
+      - name: OpenTofu Init
+        run: |
+          cd tofu
+          tofu init
+
+      - name: OpenTofu Destroy
+        run: |
+          PROJECT_ID=$(gcloud config get-value project)
+          cd tofu
+          tofu destroy -auto-approve -var="project_id=${PROJECT_ID}"

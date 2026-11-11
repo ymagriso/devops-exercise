@@ -5,15 +5,17 @@
 # 2. GCP Infrastructure & RKE2 HA Cluster Setup
 
 - [Prerequisites](#prerequisites)
-- [1. Authenticate and Configure GCP](#1-authenticate-and-configure-gcp)
-- [2. Provision the Infrastructure](#2-provision-the-infrastructure)
-- [3. Enable Secure Access (IAP) and Outbound Internet (Cloud NAT)](#3-enable-secure-access-iap-and-outbound-internet-cloud-nat)
-  - [Step 3a: Allow Inbound SSH and Kubernetes API from IAP](#step-3a-allow-inbound-ssh-and-kubernetes-api-from-iap)
-  - [Step 3b: Enable Outbound Internet via Cloud NAT](#step-3b-enable-outbound-internet-via-cloud-nat)
-- [4. Install RKE2 with Cilium (HA Control Plane)](#4-install-rke2-with-cilium-ha-control-plane)
-  - [Step 4a: Initialize the First Node](#step-4a-initialize-the-first-node)
-  - [Step 4b: Join Nodes 2 and 3](#step-4b-join-nodes-2-and-3)
-- [5. Configure Local Kubectl Access](#5-configure-local-kubectl-access)
+- [Method A: Automated Provisioning with OpenTofu & CI/CD (Recommended)](#method-a-automated-provisioning-with-opentofu--cicd-recommended)
+  - [1. One-Time GCP Workload Identity Federation (WIF) Setup](#1-one-time-gcp-workload-identity-federation-wif-setup)
+  - [2. Configure GitHub Actions Secrets](#2-configure-github-actions-secrets)
+  - [3. Deploy the Cluster via GitHub Actions](#3-deploy-the-cluster-via-github-actions)
+  - [4. Alternative: Deploy Locally with OpenTofu CLI](#4-alternative-deploy-locally-with-opentofu-cli)
+- [Method B: Manual Step-by-Step Provisioning (Imperative gcloud CLI)](#method-b-manual-step-by-step-provisioning-imperative-gcloud-cli)
+  - [1. Authenticate and Configure GCP](#1-authenticate-and-configure-gcp)
+  - [2. Provision the Infrastructure](#2-provision-the-infrastructure)
+  - [3. Enable Secure Access (IAP) and Outbound Internet (Cloud NAT)](#3-enable-secure-access-iap-and-outbound-internet-cloud-nat)
+  - [4. Install RKE2 with Cilium (HA Control Plane)](#4-install-rke2-with-cilium-ha-control-plane)
+- [Connecting to the Cluster with Local Kubectl](#connecting-to-the-cluster-with-local-kubectl)
 
 ---
 
@@ -23,24 +25,117 @@
 * A dedicated GCP Project (e.g., `sandbox-lab`).
 * [Google Cloud CLI (`gcloud`)](https://cloud.google.com/sdk/docs/install) installed locally.
 * `kubectl` and [`helm`](https://helm.sh/docs/intro/install/) installed locally.
+* [OpenTofu](https://opentofu.org/docs/intro/install/) (v1.6+) if provisioning locally.
 * A domain managed in **Cloudflare** (used for ACME DNS-01 TLS certificate validation and Cloudflare Tunnel).
 
-## 1. Authenticate and Configure GCP
+---
 
-First, log in to your Google account and set your active project.
+## Method A: Automated Provisioning with OpenTofu & CI/CD (Recommended)
+
+This repository includes complete OpenTofu declarations in the [`tofu/`](../tofu/) directory and an automated GitHub Actions deployment pipeline (`.github/workflows/tofu-apply.yml`).
+
+### Architectural Highlights of the OpenTofu Setup:
+* **Dedicated Custom VPC & Subnet (`10.10.0.0/24`)**: Complete isolation from the default network with zero additional GCP cost.
+* **Deterministic Static Internal IPs**: `rke2-node-1` (`10.10.0.11`), `rke2-node-2` (`10.10.0.12`), and `rke2-node-3` (`10.10.0.13`).
+* **Automated Cluster Bootstrapping**: Node 1 initializes RKE2 with Cilium CNI and generates the supervisor endpoint; Nodes 2 & 3 poll port `9345/ping` and join the HA control plane automatically via VM metadata startup scripts.
+* **Intra-Cluster & IAP Firewall Rules**: Allows traffic from Google IAP (`35.235.240.0/20`) for SSH and Kubernetes API, and opens all intra-subnet communication across the cluster nodes.
+
+### 1. One-Time GCP Workload Identity Federation (WIF) Setup
+
+To allow GitHub Actions to provision resources securely without downloading permanent service account JSON keys, run these commands locally once:
 
 ```bash
-# Authenticate the gcloud CLI
-gcloud auth login
+export PROJECT_ID=$(gcloud config get-value project)
+export REPO="ymagriso/devops-exercise"
+export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
 
-# Set your target GCP Project ID
+# Enable APIs
+gcloud services enable iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com compute.googleapis.com iap.googleapis.com
+
+# Create CI Service Account & grant roles
+gcloud iam service-accounts create github-actions-ci --display-name="GitHub Actions CI Service Account"
+export GCP_CI_SERVICE_ACCOUNT="github-actions-ci@${PROJECT_ID}.iam.gserviceaccount.com"
+
+gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:${GCP_CI_SERVICE_ACCOUNT}" --role="roles/compute.admin"
+gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:${GCP_CI_SERVICE_ACCOUNT}" --role="roles/iap.tunnelResourceAccessor"
+gcloud projects add-iam-policy-binding "$PROJECT_ID" --member="serviceAccount:${GCP_CI_SERVICE_ACCOUNT}" --role="roles/iam.serviceAccountUser"
+
+# Create Workload Identity Pool & Provider
+gcloud iam workload-identity-pools create "github-pool" --location="global" --display-name="GitHub Actions Pool"
+gcloud iam workload-identity-pools providers create-oidc "github-provider" \
+    --location="global" \
+    --workload-identity-pool="github-pool" \
+    --issuer-uri="https://token.actions.githubusercontent.com" \
+    --attribute-mapping="google.subject=assertion.sub,attribute.actor=assertion.actor,attribute.repository=assertion.repository" \
+    --attribute-condition="assertion.repository == '${REPO}'"
+
+# Allow GitHub repo to impersonate CI Service Account
+gcloud iam service-accounts add-iam-policy-binding "${GCP_CI_SERVICE_ACCOUNT}" \
+    --role="roles/iam.workloadIdentityUser" \
+    --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/attribute.repository/${REPO}"
+
+# Print values for GitHub Secrets
+echo "GCP_CI_SERVICE_ACCOUNT: $GCP_CI_SERVICE_ACCOUNT"
+echo "GCP_WIF_PROVIDER: projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+```
+
+### 2. Configure GitHub Actions Secrets
+
+Navigate to **Settings → Secrets and variables → Actions** in your GitHub repository and add:
+
+| Secret Name | Value Description |
+| :--- | :--- |
+| `GCP_CI_SERVICE_ACCOUNT` | Output from step 1 above (`github-actions-ci@<PROJECT_ID>.iam.gserviceaccount.com`) |
+| `GCP_WIF_PROVIDER` | Output from step 1 above (`projects/<NUM>/locations/global/...`) |
+| `CUSTOM_DOMAIN` | Your actual domain name (e.g., `example.com`) — kept private from Git |
+| `ACME_EMAIL` | Email address for Let's Encrypt certificate notices |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare DNS API token with `Zone:DNS:Edit` permissions |
+| `CLOUDFLARED_TUNNEL_TOKEN` | Token for your Cloudflare Zero Trust Tunnel |
+| `ARGOCD_GOOGLE_OIDC_CLIENT_SECRET` | Google Cloud OAuth Client Secret for SSO login |
+| `MONGODB_ROOT_PASSWORD` | Secure root password for MongoDB |
+| `MONGODB_REPLICA_SET_KEY` | ReplicaSet key for MongoDB internal replication |
+
+### 3. Deploy the Cluster via GitHub Actions
+
+1. Go to the **Actions** tab in GitHub.
+2. Select the **OpenTofu Apply & Cluster Bootstrap** workflow.
+3. Click **Run workflow** (Action: `apply`).
+4. In under 10 minutes, the workflow will:
+   * Provision the Custom VPC, Cloud Router, Cloud NAT, and 3 VMs via OpenTofu.
+   * Wait for RKE2 to complete bootstrapping on all 3 nodes.
+   * Inject all Kubernetes secrets and domain manifests via an IAP tunnel.
+   * Bootstrap the Argo CD Root App to start GitOps synchronization!
+
+### 4. Alternative: Deploy Locally with OpenTofu CLI
+
+If you prefer applying locally:
+
+```bash
+cd tofu
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your GCP project_id
+
+tofu init
+tofu plan
+tofu apply
+```
+
+---
+
+## Method B: Manual Step-by-Step Provisioning (Imperative gcloud CLI)
+
+If you prefer provisioning manually using the Google Cloud CLI:
+
+### 1. Authenticate and Configure GCP
+
+```bash
+gcloud auth login
 gcloud config set project YOUR_PROJECT_ID
 ```
 
-## 2. Provision the Infrastructure
+### 2. Provision the Infrastructure
 
-Create three `e2-standard-2` instances running Ubuntu 24.04 in `me-west1-a`.
-*To save costs (approx $11/month), these VMs are provisioned **without** external IP addresses.*
+Create three `e2-standard-2` instances running Ubuntu 24.04 in `me-west1-a` without external IP addresses:
 
 ```bash
 gcloud compute instances bulk create \
@@ -52,35 +147,21 @@ gcloud compute instances bulk create \
     --create-disk=boot=yes,image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud,size=50GB,type=pd-standard
 ```
 
-## 3. Enable Secure Access (IAP) and Outbound Internet (Cloud NAT)
-
-Because the VMs are provisioned without external IP addresses (`--network-interface=no-address`), you need two networking rules:
-1. An **IAP firewall rule** for **inbound** SSH (`tcp:22`) and Kubernetes API (`tcp:6443`) access through the IAP tunnel.
-2. A **Cloud NAT** gateway for **outbound** internet access (required to download the RKE2 installer from `get.rke2.io`, release artifacts from GitHub, and Cilium/CoreDNS container images).
-
-### Step 3a: Allow Inbound SSH and Kubernetes API from IAP
-
-Create a firewall rule to allow SSH (`tcp:22`) and Kubernetes API (`tcp:6443`) traffic from Google's Identity-Aware Proxy (IAP) IP range:
+### 3. Enable Secure Access (IAP) and Outbound Internet (Cloud NAT)
 
 ```bash
+# Allow IAP Ingress
 gcloud compute firewall-rules create allow-ssh-from-iap \
     --direction=INGRESS \
     --action=allow \
     --rules=tcp:22,tcp:6443 \
     --source-ranges=35.235.240.0/20
-```
 
-### Step 3b: Enable Outbound Internet via Cloud NAT
-
-Create a Cloud Router and attach a Cloud NAT gateway in `me-west1`:
-
-```bash
-# Create a Cloud Router in me-west1
+# Create Cloud Router and NAT
 gcloud compute routers create rke2-nat-router \
     --network=default \
     --region=me-west1
 
-# Attach a Cloud NAT gateway to allow outbound internet traffic for private VMs
 gcloud compute routers nats create rke2-nat-config \
     --router=rke2-nat-router \
     --region=me-west1 \
@@ -88,54 +169,25 @@ gcloud compute routers nats create rke2-nat-config \
     --nat-all-subnet-ip-ranges
 ```
 
-## 4. Install RKE2 with Cilium (HA Control Plane)
+### 4. Install RKE2 with Cilium (HA Control Plane)
 
-### Step 4a: Initialize the First Node
-
-SSH into `rke2-node-1` using IAP:
-
+**Node 1 (Initial Server):**
 ```bash
 gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a
-```
-
-Configure RKE2 to use Cilium as the CNI and set the short hostname as `node-name` before installing (GCP's default internal FQDN `<vm>.<zone>.c.<project-id>.internal` can exceed Kubernetes's 63-byte label limit):
-
-```bash
 sudo mkdir -p /etc/rancher/rke2
 sudo tee /etc/rancher/rke2/config.yaml <<EOF
 node-name: $(hostname -s)
 cni: cilium
 EOF
-```
-
-Install and start RKE2:
-
-```bash
 curl -sfL https://get.rke2.io | sudo sh -
 sudo systemctl enable --now rke2-server.service
-```
-
-Retrieve the node joining token (save this for the next step):
-
-```bash
 sudo cat /var/lib/rancher/rke2/server/node-token
+exit
 ```
 
-Type `exit` to return to your local machine.
-
-### Step 4b: Join Nodes 2 and 3
-
-Repeat the following process for **both** `rke2-node-2` and `rke2-node-3`.
-
-SSH into the node:
-
+**Nodes 2 and 3 (Join Servers):**
 ```bash
 gcloud compute ssh rke2-node-2 --tunnel-through-iap --zone=me-west1-a
-```
-
-Create the RKE2 configuration file to point to the first node, set the short `node-name`, and configure the CNI (replace `<INTERNAL_IP_OF_NODE_1>` and `<TOKEN>`):
-
-```bash
 sudo mkdir -p /etc/rancher/rke2
 sudo tee /etc/rancher/rke2/config.yaml <<EOF
 node-name: $(hostname -s)
@@ -143,49 +195,38 @@ server: https://<INTERNAL_IP_OF_NODE_1>:9345
 token: <TOKEN>
 cni: cilium
 EOF
-```
-
-Install and start the RKE2 server component:
-
-```bash
 curl -sfL https://get.rke2.io | sudo sh -
 sudo systemctl enable --now rke2-server.service
+exit
 ```
 
-## 5. Configure Local Kubectl Access
+---
 
-Because the cluster is private, route your local `kubectl` traffic through an IAP tunnel.
+## Connecting to the Cluster with Local Kubectl
 
-**1. Copy the kubeconfig file to your local machine:**
+Regardless of whether you used Method A or Method B:
 
-```bash
-# Securely copy file from root to user on VM
-gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a \
-    --command="sudo cp /etc/rancher/rke2/rke2.yaml ~/.kubeconfig && sudo chown \$(whoami) ~/.kubeconfig"
+1. **Download the kubeconfig file:**
+   ```bash
+   gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a \
+       --command="sudo cat /etc/rancher/rke2/rke2.yaml" > ./rke2-kubeconfig.yaml
+   ```
 
-# Download file to local machine
-gcloud compute scp rke2-node-1:~/.kubeconfig ./rke2-kubeconfig.yaml \
-    --tunnel-through-iap --zone=me-west1-a
-```
+2. **Open the IAP Port Forwarding Tunnel:**
+   *(Run this in a dedicated terminal window and leave it running)*
+   ```bash
+   gcloud compute start-iap-tunnel rke2-node-1 6443 \
+       --local-host-port=localhost:6443 \
+       --zone=me-west1-a
+   ```
 
-**2. Open the IAP Port Forwarding Tunnel:**
-*Run this in a dedicated terminal window and leave it open.*
+3. **Verify Node Status:**
+   ```bash
+   export KUBECONFIG=$(pwd)/rke2-kubeconfig.yaml
+   kubectl get nodes -o wide
+   ```
 
-```bash
-gcloud compute start-iap-tunnel rke2-node-1 6443 \
-    --local-host-port=localhost:6443 \
-    --zone=me-west1-a
-```
-
-**3. Test the connection:**
-Open a new terminal window on your local machine and point `kubectl` to the downloaded file.
-
-```bash
-export KUBECONFIG=$(pwd)/rke2-kubeconfig.yaml
-kubectl get nodes
-```
-
-You should see all 3 nodes listed with the `control-plane,etcd` roles.
+All three nodes will be listed in `Ready` status with the roles `control-plane,etcd`.
 
 ---
 

@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Route stdout and stderr to both a bootstrap log file and the console
+exec > >(tee -a /var/log/rke2-bootstrap.log /dev/kmsg) 2>&1
+
+echo "============================================================"
+echo "Starting RKE2 automated bootstrap on $(hostname)"
+echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%SZ')"
+echo "Node Name: ${node_name}"
+echo "Node IP:   ${node_ip}"
+echo "============================================================"
+
+# Ensure RKE2 configuration directory exists
+mkdir -p /etc/rancher/rke2
+
+%{ if is_init_node ~}
+echo "[INIT] Configuring primary RKE2 server node..."
+
+cat <<'EOF' > /etc/rancher/rke2/config.yaml
+node-name: "${node_name}"
+node-ip: "${node_ip}"
+cni: cilium
+token: "${token}"
+tls-san:
+  - "${init_node_ip}"
+  - "127.0.0.1"
+  - "localhost"
+EOF
+
+echo "[INIT] Installing RKE2 server binary..."
+%{ if rke2_version != "" ~}
+curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION="${rke2_version}" sh -
+%{ else ~}
+curl -sfL https://get.rke2.io | sh -
+%{ endif ~}
+
+echo "[INIT] Enabling and starting rke2-server service..."
+systemctl daemon-reload
+systemctl enable --now rke2-server.service
+
+echo "[INIT] Waiting for local Kubernetes API server to become ready..."
+until /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>/dev/null; do
+  echo "Kubernetes API not ready yet, sleeping 5s..."
+  sleep 5
+done
+
+echo "[INIT] Primary RKE2 control-plane node successfully bootstrapped!"
+
+%{ else ~}
+echo "[JOIN] Configuring joining RKE2 server node..."
+
+cat <<'EOF' > /etc/rancher/rke2/config.yaml
+node-name: "${node_name}"
+node-ip: "${node_ip}"
+server: "https://${init_node_ip}:9345"
+token: "${token}"
+cni: cilium
+tls-san:
+  - "${init_node_ip}"
+  - "127.0.0.1"
+  - "localhost"
+EOF
+
+echo "[JOIN] Waiting for primary node supervisor (https://${init_node_ip}:9345/ping)..."
+until curl -k -s -f "https://${init_node_ip}:9345/ping" >/dev/null 2>&1; do
+  echo "Supervisor endpoint not reachable yet, waiting 5s..."
+  sleep 5
+done
+
+echo "[JOIN] Primary node supervisor is healthy. Installing RKE2..."
+%{ if rke2_version != "" ~}
+curl -sfL https://get.rke2.io | INSTALL_RKE2_VERSION="${rke2_version}" sh -
+%{ else ~}
+curl -sfL https://get.rke2.io | sh -
+%{ endif ~}
+
+echo "[JOIN] Enabling and starting rke2-server service..."
+systemctl daemon-reload
+systemctl enable --now rke2-server.service
+
+echo "[JOIN] Joining node ${node_name} successfully started and registered!"
+%{ endif ~}
+
+# Post-install convenience: export PATH and KUBECONFIG for interactive sessions
+mkdir -p /etc/profile.d
+cat <<'EOF' > /etc/profile.d/rke2.sh
+export PATH="$PATH:/var/lib/rancher/rke2/bin"
+export KUBECONFIG="/etc/rancher/rke2/rke2.yaml"
+EOF
+
+# Create symlinks for common CLI binaries if available
+ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl 2>/dev/null || true
+ln -sf /var/lib/rancher/rke2/bin/crictl /usr/local/bin/crictl 2>/dev/null || true
+
+echo "============================================================"
+echo "RKE2 bootstrap complete at $(date -u '+%Y-%m-%d %H:%M:%SZ')"
+echo "============================================================"
