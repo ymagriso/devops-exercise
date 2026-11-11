@@ -408,7 +408,9 @@ You can now access the Argo CD UI directly in your browser at `https://argocd.<y
 [`argocd/values.yaml`](argocd/values.yaml) disables the built-in local `admin` user (`admin.enabled: false`) and configures native OpenID Connect (OIDC) authentication against Google (`https://accounts.google.com`).
 
 1. **Create a Google OAuth 2.0 Client in GCP Console** (*APIs & Services → Credentials*):
-   * Configure the **OAuth consent screen** (External or Internal) and add your Google account under **Test users**.
+   * Configure the **OAuth consent screen** (*Google Auth Platform → Audience*):
+     * Set **User Type (Audience)** to **External** (required for personal `@gmail.com` accounts; **Internal** restricts sign-in to a Google Workspace organization and returns `"can only be used within its organization"`).
+     * Keep **Publishing status** set to **Testing** and add your Google email under **Test users** (this blocks all unlisted Google accounts at Google's login screen without needing app verification).
    * Click **Create Credentials → OAuth client ID**:
      * **Application type:** `Web application`
      * **Authorized redirect URIs:**
@@ -437,6 +439,17 @@ kubectl patch configmap argocd-cm -n argocd \
 kubectl patch configmap argocd-rbac-cm -n argocd \
     --type merge \
     -p '{"data":{"policy.csv":"g, YOUR_GOOGLE_EMAIL, role:admin"}}'
+```
+
+4. **Granting Access to Additional Google Users (Optional):**
+   Because access is protected by both Google OAuth **Testing** mode and Argo CD RBAC (`policy.default: ""`), adding another user requires updating both layers:
+   * **GCP Console (*OAuth consent screen / Audience → Test users*):** Click **+ Add Users** and add the user's Google email (supports up to 100 test users).
+   * **Argo CD RBAC (`argocd-rbac-cm`):** Append a `g, <email>, <role>` line (`role:readonly` for view-only access or `role:admin` for full admin access):
+
+```bash
+kubectl patch configmap argocd-rbac-cm -n argocd \
+    --type merge \
+    -p '{"data":{"policy.csv":"g, YOUR_GOOGLE_EMAIL, role:admin\ng, COLLEAGUE_GOOGLE_EMAIL, role:readonly"}}'
 ```
 
 ## Cost Management Tip: Stopping and Starting the Cluster
