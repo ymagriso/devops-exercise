@@ -2,12 +2,36 @@
 
 ---
 
-# 6. Cluster Operations & Cost Management
+# 6. Cluster Operations, Dependency Automation & Cost Management
 
+- [Automated Dependency Updates with Mend Renovate](#automated-dependency-updates-with-mend-renovate)
+  - [Tracked Managers & Files](#tracked-managers--files)
+  - [Cooldown (`minimumReleaseAge`) & Rate-Limiting Strategy](#cooldown-minimumreleaseage--rate-limiting-strategy)
 - [Stop the Instances](#stop-the-instances)
 - [Start the Instances](#start-the-instances)
 - [Check Instance Status](#check-instance-status)
 - [Delete the Cluster (Full Cleanup)](#delete-the-cluster-full-cleanup)
+
+---
+
+## Automated Dependency Updates with Mend Renovate
+
+This repository uses the [**Mend Renovate**](https://developer.mend.io) GitHub App configured via [`renovate.json`](../renovate.json) to automatically detect and open Pull Requests for new **Helm chart versions** and **Docker container image tags**. Because Argo CD is configured with automated sync (`automated: true`), merging a Renovate PR into `main` automatically rolls out the upgrade to the cluster.
+
+### Tracked Managers & Files
+
+| Renovate Manager | Pattern (`managerFilePatterns`) | Tracked Dependencies |
+| :--- | :--- | :--- |
+| **`argocd`** | `/^argocd/(apps\|bootstrap)/[^/]+\.ya?ml$/` | • `argo-cd` Helm chart in [`argocd/apps/argocd.yaml`](../argocd/apps/argocd.yaml)<br>• `cert-manager` Helm chart in [`argocd/apps/cert-manager.yaml`](../argocd/apps/cert-manager.yaml)<br>• `mongodb` OCI Helm chart in [`argocd/apps/mongodb.yaml`](../argocd/apps/mongodb.yaml) |
+| **`kubernetes`** | `/^argocd/apps/workloads/.+\.ya?ml$/` | • `cloudflare/cloudflared` image in [`argocd/apps/workloads/cloudflared/deployment.yaml`](../argocd/apps/workloads/cloudflared/deployment.yaml) |
+| **`helm-values`** | `/(^\|/)values\.ya?ml$/` | • `bitnamilegacy/mongodb` & `bitnamilegacy/mongodb-exporter` images in [`mongodb/values.yaml`](../mongodb/values.yaml) |
+
+### Cooldown (`minimumReleaseAge`) & Rate-Limiting Strategy
+
+To protect the GitOps cluster against supply-chain compromises and unstable "Day-0" upstream releases:
+* **3-Day Default Cooldown (`"minimumReleaseAge": "3 days"`):** Patch and minor Helm chart or Docker image updates must soak upstream for at least 3 days before Renovate opens a PR.
+* **7-Day Major Release Cooldown (`matchUpdateTypes: ["major"]`):** Major version upgrades require a 7-day cooldown window to allow early upstream hotfixes (`.1` / `.2`) to settle.
+* **PR Rate Limits (`prHourlyLimit: 2`, `prConcurrentLimit: 5`):** Prevents PR spam while automatically tagging PRs with `helm` / `docker` and `dependencies` labels.
 
 ---
 
