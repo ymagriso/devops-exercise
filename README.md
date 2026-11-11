@@ -26,6 +26,11 @@ The infrastructure is optimized to run within the boundaries of the $300 GCP Fre
   - [Step 6a: Create the Cloudflare API Token Secret](#step-6a-create-the-cloudflare-api-token-secret)
   - [Step 6b: Install cert-manager via Helm](#step-6b-install-cert-manager-via-helm)
   - [Step 6c: Configure Let's Encrypt ClusterIssuers](#step-6c-configure-lets-encrypt-clusterissuers)
+- [7. Deploy Self-Managed Argo CD and Expose via Cloudflare Tunnel](#7-deploy-self-managed-argo-cd-and-expose-via-cloudflare-tunnel)
+  - [Step 7a: Install Argo CD via Helm](#step-7a-install-argo-cd-via-helm)
+  - [Step 7b: Issue a Let's Encrypt TLS Certificate for Argo CD](#step-7b-issue-a-lets-encrypt-tls-certificate-for-argo-cd)
+  - [Step 7c: Configure the Cloudflare Tunnel Secret and Public Hostname](#step-7c-configure-the-cloudflare-tunnel-secret-and-public-hostname)
+  - [Step 7d: Bootstrap GitOps (Root App-of-Apps)](#step-7d-bootstrap-gitops-root-app-of-apps)
 - [Cost Management Tip: Stopping and Starting the Cluster](#cost-management-tip-stopping-and-starting-the-cluster)
   - [Stop the Instances](#stop-the-instances)
   - [Start the Instances](#start-the-instances)
@@ -313,6 +318,89 @@ Verify that both `letsencrypt-staging` and `letsencrypt-prod` `ClusterIssuer` re
 ```bash
 kubectl get clusterissuer
 ```
+
+## 7. Deploy Self-Managed Argo CD and Expose via Cloudflare Tunnel
+
+Argo CD is deployed using the official `argo/argo-cd` Helm chart (Standard single-replica profile) and configured using the **App-of-Apps GitOps pattern** ([`argocd/bootstrap/root-app.yaml`](argocd/bootstrap/root-app.yaml)) so that Argo CD continuously manages:
+* **Itself** ([`argocd/apps/argocd.yaml`](argocd/apps/argocd.yaml) + [`argocd/values.yaml`](argocd/values.yaml))
+* **`cert-manager`** ([`argocd/apps/cert-manager.yaml`](argocd/apps/cert-manager.yaml) + [`cert-manager/values.yaml`](cert-manager/values.yaml))
+* **Cloudflare Tunnel (`cloudflared`)** ([`argocd/apps/cloudflared.yaml`](argocd/apps/cloudflared.yaml) + [`argocd/apps/workloads/cloudflared/`](argocd/apps/workloads/cloudflared/))
+
+Because `cloudflared` establishes an outbound-only connection through Cloud NAT to Cloudflare's edge and connects internally to `argocd-server` over HTTPS using a Let's Encrypt certificate issued by `cert-manager`, the Argo CD UI and CLI are exposed on your custom domain with **end-to-end strict TLS** and zero GCP LoadBalancer or public IP costs.
+
+### Step 7a: Install Argo CD via Helm
+
+Add the Argo Helm repository and install Argo CD using [`argocd/values.yaml`](argocd/values.yaml):
+
+```bash
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update
+
+helm upgrade --install argocd argo/argo-cd \
+    --namespace argocd \
+    --create-namespace \
+    --version 10.17.2 \
+    --values argocd/values.yaml \
+    --wait
+```
+
+Retrieve the initial `admin` password for logging into the Argo CD UI/CLI:
+
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret \
+    -o jsonpath="{.data.password}" | base64 -d; echo
+```
+
+### Step 7b: Issue a Let's Encrypt TLS Certificate for Argo CD
+
+Apply [`argocd/certificate.yaml`](argocd/certificate.yaml), substituting `argocd.yourdomain.com` with your actual subdomain so `cert-manager` provisions a signed Let's Encrypt certificate into the `argocd-server-tls` Secret:
+
+```bash
+sed 's/argocd.yourdomain.com/argocd.YOUR_ACTUAL_DOMAIN/g' argocd/certificate.yaml | kubectl apply -f -
+```
+
+Wait ~1–2 minutes for the DNS-01 challenge to complete and verify the certificate is `READY: True`:
+
+```bash
+kubectl get certificate -n argocd
+```
+
+### Step 7c: Configure the Cloudflare Tunnel Secret and Public Hostname
+
+1. In the [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/) (*Networks → Tunnels*), create a new **Cloudflared** tunnel (e.g., `rke2-cluster`) and copy the **Tunnel Token**.
+2. Create the `cloudflared` namespace and store the token in a Kubernetes Secret (kept out of Git):
+
+```bash
+kubectl create namespace cloudflared
+
+kubectl create secret generic cloudflared-token \
+    -n cloudflared \
+    --from-literal=token='<YOUR_CLOUDFLARE_TUNNEL_TOKEN>'
+```
+
+3. In the tunnel's **Public Hostname** configuration in Cloudflare Zero Trust:
+   * **Subdomain:** `argocd`
+   * **Domain:** `<your-domain>`
+   * **Service Type:** `HTTPS`
+   * **URL:** `argocd-server.argocd.svc.cluster.local:443`
+   * **Additional application settings → TLS → Origin Server Name:** `argocd.<your-domain>` *(validates the Let's Encrypt certificate served by `argocd-server`)*
+
+### Step 7d: Bootstrap GitOps (Root App-of-Apps)
+
+Apply the root `Application` ([`argocd/bootstrap/root-app.yaml`](argocd/bootstrap/root-app.yaml)), which automatically syncs all applications under [`argocd/apps/`](argocd/apps/) (`argocd`, `cert-manager`, and `cloudflared`):
+
+```bash
+kubectl apply -f argocd/bootstrap/root-app.yaml
+```
+
+Verify that all Argo CD applications are `Synced` and `Healthy`, and that the `cloudflared` pods are running:
+
+```bash
+kubectl get applications -n argocd
+kubectl get pods -n cloudflared
+```
+
+You can now access the Argo CD UI directly in your browser at `https://argocd.<your-domain>` (logging in with username `admin` and the password from Step 7a).
 
 ## Cost Management Tip: Stopping and Starting the Cluster
 
