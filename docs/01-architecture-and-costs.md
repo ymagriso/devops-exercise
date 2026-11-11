@@ -6,6 +6,11 @@
 
 - [Why RKE2?](#why-rke2)
 - [Why Cilium CNI?](#why-cilium-cni)
+- [Namespace Strategy: Single Namespace vs. Multiple Namespaces](#namespace-strategy-single-namespace-vs-multiple-namespaces)
+  - [Core Trade-Offs at a Glance](#core-trade-offs-at-a-glance)
+  - [Single Namespace: Pros & Cons](#single-namespace-pros--cons)
+  - [Multiple Namespaces: Pros & Cons](#multiple-namespaces-pros--cons)
+  - [Architectural Contexts & Recommendations](#architectural-contexts--recommendations)
 - [Regional Cost & Latency Comparison](#regional-cost--latency-comparison)
   - ["Always Free" Tier vs. $300 Free Trial Credits](#always-free-tier-vs-300-free-trial-credits)
   - [Cost Breakdown Across Regions (Full 3-Node Cluster)](#cost-breakdown-across-regions-full-3-node-cluster)
@@ -39,6 +44,73 @@ RKE2 natively bundles several Container Network Interfaces (CNIs). For this spec
 | **Cilium** | eBPF | High (Low Latency) | Low | **Selected.** Bypasses traditional `iptables` overhead, significantly reducing network latency for database replication while freeing up RAM for your application. |
 | **Calico** | BGP (iptables) | Very Good | Moderate | Strong alternative with excellent security, but its native eBPF mode requires extra configuration outside of the RKE2 defaults. |
 | **Canal** | VXLAN (iptables) | Moderate | Low | RKE2 Default. The VXLAN encapsulation/de-encapsulation adds network overhead that is not ideal for heavy database workloads. |
+
+## Namespace Strategy: Single Namespace vs. Multiple Namespaces
+
+Kubernetes namespaces provide a logical boundary for organizing cluster resources, enforcing security policies, scoping secrets, and dividing compute quotas. Choosing when to group resources into a **single namespace** versus splitting them across **multiple namespaces** is a key architectural decision.
+
+### Core Trade-Offs at a Glance
+
+| Dimension | Single Namespace | Multiple Namespaces |
+| :--- | :--- | :--- |
+| **Service Discovery (DNS)** | Short service names work out-of-the-box (`http://backend:8080`) | Requires cross-namespace FQDNs (`http://backend.<namespace>.svc.cluster.local:8080`) |
+| **Secret & ConfigMap Scope** | All workloads in the namespace can potentially mount shared `Secret` and `ConfigMap` objects | Secrets are strictly scoped per namespace; reduces credential exposure and blast radius |
+| **RBAC & Access Control** | Coarse-grained (`RoleBinding` grants access to everything in the shared namespace) | Fine-grained (`Role` / `RoleBinding` per team, component, or environment) |
+| **Network Isolation (Cilium)** | Requires pod-label selectors for every `NetworkPolicy` / `CiliumNetworkPolicy` | Enables simple default-deny boundaries at the namespace level (`io.kubernetes.pod.namespace`) |
+| **Resource Quotas & Limits** | One shared `ResourceQuota` / `LimitRange` pool; noisy neighbors can starve co-located services | Dedicated `ResourceQuota` and `LimitRange` per namespace prevent resource starvation |
+| **GitOps & Lifecycle (Argo CD)** | Simple single-target deployment, but pruning or deleting the namespace wipes all components | Independent sync, prune, and deletion boundaries per component or environment |
+| **Resource Duplication** | Minimal — shared pull secrets, TLS certificates, and config maps exist only once | Shared secrets (e.g., wildcard TLS certs or registry pull secrets) must be replicated or synced |
+
+### Single Namespace: Pros & Cons
+
+**Pros:**
+* **Simpler Service-to-Service Communication:** Pods within the same namespace can reach each other by short service name (e.g., `mongodb:27017`), simplifying application configuration.
+* **Direct Secret & ConfigMap Sharing:** Shared `Secret` objects (such as TLS certificates, OAuth credentials, or image pull secrets) and `ConfigMap` objects can be mounted directly by any pod without needing cross-namespace synchronization tools (like `reflector` or `external-secrets`).
+* **Lower Operational Overhead:** Fewer manifests to maintain, fewer `RoleBinding` and `NetworkPolicy` rules to debug, and a single target namespace in `kubectl` commands (`kubectl get all -n app`).
+
+**Cons:**
+* **Larger Security Blast Radius:** If a compromised pod or overly permissive `ServiceAccount` has secret-read permissions in that namespace, it can access secrets belonging to every other workload in the same namespace.
+* **Naming Collisions:** Resource names (`Service`, `Deployment`, `ConfigMap`, `Secret`) must be unique within a namespace, requiring prefixes when multiple components or environments share one namespace.
+* **Noisy Neighbor Risk:** Without namespace-level `ResourceQuota` boundaries, a memory leak or CPU spike in one workload can exhaust quota meant for critical databases or platform services.
+* **Accidental Deletion / Prune Risk:** Deleting the namespace or misconfiguring an Argo CD application prune policy can inadvertently tear down unrelated workloads sharing that namespace.
+
+### Multiple Namespaces: Pros & Cons
+
+**Pros:**
+* **Strong Security & Secret Isolation:** Kubernetes `Secret` objects cannot be mounted across namespaces. Sensitive credentials—such as `cloudflare-api-token` in `cert-manager`, `argocd-google-oidc` in `argocd`, and `tunnel-credentials` in `cloudflare`—are completely invisible to application workloads.
+* **Zero-Trust Network Segmentation with Cilium:** With Cilium as the CNI, you can apply default-deny ingress/egress policies per namespace and explicitly allow only required cross-namespace paths (for example, allowing `cloudflare` (`cloudflared`) to reach `argocd-server.argocd.svc.cluster.local:443` and nothing else).
+* **Blast-Radius & Lifecycle Containment:** Upgrading, rolling back, or deleting one component's namespace (`kubectl delete ns cloudflare`) cannot accidentally delete resources in `argocd` or `cert-manager`.
+* **Granular RBAC & Multi-Tenancy:** In Argo CD and Kubernetes RBAC, you can grant developers full access to an application namespace while keeping infrastructure namespaces (`kube-system`, `cert-manager`, `argocd`) read-only or restricted to platform admins.
+* **Dedicated Resource Governance:** On memory-constrained nodes (such as 3 × 8 GB RAM VMs), per-namespace `ResourceQuota` and `LimitRange` policies ensure development workloads cannot starve stateful databases or control-plane components.
+
+**Cons:**
+* **Cross-Namespace Secret Management:** Because `Secret` and `ConfigMap` objects cannot be referenced across namespaces by regular pods, shared assets (like a wildcard TLS certificate or private container registry credentials) must either be issued per namespace (via a `ClusterIssuer`) or replicated across namespaces.
+* **Explicit FQDN Addressing:** Services calling across namespaces must use `<service>.<namespace>.svc.cluster.local` (e.g., `https://argocd-server.argocd.svc.cluster.local:443`).
+* **More Policy Boilerplate:** Each namespace requires its own `Namespace` manifest, `ResourceQuota`, `LimitRange`, `RoleBinding`, and `NetworkPolicy` definitions.
+
+### Architectural Contexts & Recommendations
+
+#### 1. Platform & Infrastructure Isolation (Used in This Repository)
+In this repository, each platform component runs in its own dedicated namespace:
+* **`kube-system`** — RKE2 core components and Cilium CNI
+* **`cert-manager`** — TLS certificate controller (`cloudflare-api-token` secret stays isolated here)
+* **`argocd`** — GitOps control plane (`argocd-google-oidc` and `argocd-server-tls` stay isolated here)
+* **`cloudflare`** — Edge connector (`cloudflared` pods and `tunnel-credentials` secret stay isolated here)
+
+> **Why this is recommended:** Platform tools hold high-privilege credentials (DNS API tokens, OIDC client secrets, tunnel tokens). Isolating each into its own namespace ensures that even if `cloudflared` (which handles external edge traffic) were compromised, it cannot read `cert-manager`'s Cloudflare DNS API token or Argo CD's OIDC secrets. Furthermore, using a `ClusterIssuer` (`letsencrypt-prod`) allows `cert-manager` to issue `Certificate` secrets into any target namespace without sharing its own namespace.
+
+#### 2. Application Microservices & Stateful Databases (e.g., App Tier + MongoDB)
+When deploying an application stack consisting of stateless APIs/workers and a stateful MongoDB replica set:
+* **Single Application Namespace (`my-app`) — Recommended for tightly coupled stacks:** If a MongoDB replica set is dedicated exclusively to one application and managed by the same team, placing the backend API and its dedicated MongoDB stateful set in the **same namespace** simplifies service discovery (`mongodb-0.mongodb-headless:27017`), shares database connection secrets cleanly, and keeps the entire application stack within one Argo CD `Application`.
+* **Separate Database Namespace (`my-app` + `mongodb-prod`) — Recommended for shared data services or strict DBA boundaries:** If multiple applications share the database cluster, or if you want to prevent application developers from accidentally deleting `PersistentVolumeClaim` objects or database `StatefulSet` pods during a deployment reset, isolating the stateful database in its own `database` namespace with strict Cilium network policies (allowing ingress only on port `27017` from the `my-app` namespace) provides superior protection against accidental data loss.
+
+#### 3. Multi-Environment Separation (`dev` / `staging` / `prod`)
+When running multiple environments on a single 3-node cluster to stay within the $300 GCP Free Trial budget:
+* **Separate Namespaces per Environment (`app-dev`, `app-staging`, `app-prod`) — Strongly Recommended:** Never mix `dev`, `staging`, and `prod` workloads in a single namespace. Using one namespace per environment lets you:
+  1. Reuse identical Kubernetes resource names (`Deployment/api`, `Service/api`) across environments without naming collisions.
+  2. Apply strict `ResourceQuota` limits to `app-dev` and `app-staging` so non-production tests cannot exhaust the 24 GB total cluster RAM and impact `app-prod`.
+  3. Block cross-environment traffic using Cilium `NetworkPolicy` so a `dev` pod can never accidentally connect to a `prod` MongoDB instance.
+  4. Manage each environment as a separate Argo CD `Application` (e.g., auto-syncing `app-dev` on commit while requiring manual sync or promotion for `app-prod`).
 
 ## Regional Cost & Latency Comparison
 
