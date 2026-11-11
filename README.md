@@ -1,504 +1,72 @@
-# High Availability RKE2 Cluster on Google Cloud (Free Trial Setup)
+# High Availability RKE2 Cluster on Google Cloud (GitOps & Free Trial Setup)
 
-This repository contains the instructions for deploying a highly available, 3-node RKE2 (Kubernetes) cluster on Google Cloud Platform (GCP).
+This repository contains the configuration, GitOps manifests, and step-by-step documentation for deploying a highly available, 3-node **RKE2 (Kubernetes)** cluster on **Google Cloud Platform (GCP)**.
 
-The infrastructure is optimized to run within the boundaries of the $300 GCP Free Trial by utilizing Identity-Aware Proxy (IAP) instead of public external IPs, and deploying all 3 nodes symmetrically as both control plane and worker nodes. It also configures **Cilium** as the CNI for high performance and low latency, which is ideal for stateful workloads like MongoDB.
+The architecture is optimized to run within the **$300 GCP Free Trial** by provisioning private VMs (`--network-interface=no-address`), using **Identity-Aware Proxy (IAP)** for administrative access, **Cloud NAT** for outbound internet, **Cilium** (eBPF) as the CNI, **`cert-manager`** (Let's Encrypt DNS-01) for automated HTTPS certificates, and **self-managed Argo CD** exposed via **Cloudflare Tunnel (`cloudflared`)** with **Google OIDC** authentication.
 
-## Table of Contents
+---
 
-- [Why RKE2?](#why-rke2)
-- [Why Cilium CNI?](#why-cilium-cni)
-- [Regional Cost & Latency Comparison](#regional-cost--latency-comparison)
-  - ["Always Free" Tier vs. $300 Free Trial Credits](#always-free-tier-vs-300-free-trial-credits)
-  - [Cost Breakdown Across Regions (Full 3-Node Cluster)](#cost-breakdown-across-regions-full-3-node-cluster)
-  - [Practical Impact & Choosing a Closer Region](#practical-impact--choosing-a-closer-region)
-- [Prerequisites](#prerequisites)
-- [1. Authenticate and Configure GCP](#1-authenticate-and-configure-gcp)
-- [2. Provision the Infrastructure](#2-provision-the-infrastructure)
-- [3. Enable Secure Access (IAP) and Outbound Internet (Cloud NAT)](#3-enable-secure-access-iap-and-outbound-internet-cloud-nat)
-  - [Step 3a: Allow Inbound SSH and Kubernetes API from IAP](#step-3a-allow-inbound-ssh-and-kubernetes-api-from-iap)
-  - [Step 3b: Enable Outbound Internet via Cloud NAT](#step-3b-enable-outbound-internet-via-cloud-nat)
-- [4. Install RKE2 with Cilium (HA Control Plane)](#4-install-rke2-with-cilium-ha-control-plane)
-  - [Step 4a: Initialize the First Node](#step-4a-initialize-the-first-node)
-  - [Step 4b: Join Nodes 2 and 3](#step-4b-join-nodes-2-and-3)
-- [5. Configure Local Kubectl Access](#5-configure-local-kubectl-access)
-- [6. Install cert-manager and Configure Let's Encrypt (HTTPS)](#6-install-cert-manager-and-configure-lets-encrypt-https)
-  - [Step 6a: Create the Cloudflare API Token Secret](#step-6a-create-the-cloudflare-api-token-secret)
-  - [Step 6b: Install cert-manager via Helm](#step-6b-install-cert-manager-via-helm)
-  - [Step 6c: Configure Let's Encrypt ClusterIssuers](#step-6c-configure-lets-encrypt-clusterissuers)
-- [7. Deploy Self-Managed Argo CD and Expose via Cloudflare Tunnel](#7-deploy-self-managed-argo-cd-and-expose-via-cloudflare-tunnel)
-  - [Step 7a: Install Argo CD via Helm](#step-7a-install-argo-cd-via-helm)
-  - [Step 7b: Issue a Let's Encrypt TLS Certificate for Argo CD](#step-7b-issue-a-lets-encrypt-tls-certificate-for-argo-cd)
-  - [Step 7c: Configure the Cloudflare Tunnel Secret and Public Hostname](#step-7c-configure-the-cloudflare-tunnel-secret-and-public-hostname)
-  - [Step 7d: Bootstrap GitOps (Root App-of-Apps)](#step-7d-bootstrap-gitops-root-app-of-apps)
-  - [Step 7e: Configure Google OIDC Authentication (Disable Default Admin)](#step-7e-configure-google-oidc-authentication-disable-default-admin)
-- [Cost Management Tip: Stopping and Starting the Cluster](#cost-management-tip-stopping-and-starting-the-cluster)
-  - [Stop the Instances](#stop-the-instances)
-  - [Start the Instances](#start-the-instances)
-  - [Check Instance Status](#check-instance-status)
-  - [Delete the Cluster (Full Cleanup)](#delete-the-cluster-full-cleanup)
+## Architecture Overview
 
-## Why RKE2?
+```mermaid
+flowchart LR
+    Admin["Admin (gcloud / kubectl)"] -->|"IAP Tunnel (:22 / :6443)"| RKE2
+    User["User (Browser / SSO)"] -->|"HTTPS (Google OIDC)"| CF["Cloudflare Edge"]
+    subgraph GCP["GCP Private VPC (me-west1)"]
+        NAT["Cloud NAT"]
+        subgraph RKE2["3-Node HA RKE2 Cluster (Cilium eBPF CNI)"]
+            CFD["cloudflared (2 replicas)"]
+            Argo["Argo CD (Self-Managed)"]
+            CM["cert-manager (Let's Encrypt DNS-01)"]
+        end
+    end
+    GH["GitHub (ymagriso/devops-exercise)"]
 
-Before starting, it is helpful to understand why RKE2 was selected over Rancher's other distributions (RKE and K3s).
-
-| Feature | RKE (RKE1) | K3s | RKE2 (RKE Government) |
-|---|---|---|---|
-| **Focus** | Legacy Enterprise / Docker-based | Lightweight Edge / IoT / Dev | Secure, Compliant Enterprise / Cloud |
-| **Architecture** | Docker containers | Single binary (lightweight) | Single binary (combines K3s usability with upstream alignment) |
-| **Control Plane** | Runs in Docker containers | Bundled, runs as a single process | Runs as static pods (highly observable) |
-| **Datastore** | etcd | SQLite (default), etcd, MySQL, Postgres | etcd (default) |
-| **Container Runtime** | Docker | containerd | containerd |
-| **Security/Compliance** | Standard | Standard | CIS Benchmark v1.7/v1.8 out-of-the-box, FIPS 140-2, Trivy scanned |
-| **Resource Overhead** | High | Very Low | Moderate (scales with workload) |
-| **Best For** | Existing RKE1 deployments | Resource-constrained edge, Raspberry Pi, single-node | Production clusters, government compliance, HA with etcd |
-
-> **Why RKE2 is the correct choice here:** RKE2 provides the modern, single-binary ease-of-use of K3s but defaults to a robust, highly-available `etcd` backend required for production clusters. Unlike K3s, which is optimized for resource-constrained edge devices (like Raspberry Pis), RKE2 aligns closely with upstream Kubernetes, making it the superior choice for deploying resilient, stateful workloads like MongoDB on enterprise-grade VMs in GCP.
-
-## Why Cilium CNI?
-
-RKE2 natively bundles several Container Network Interfaces (CNIs). For this specific architecture—running stateful MongoDB replica sets on memory-constrained (8GB RAM) VMs—**Cilium** was selected for its distinct performance advantages.
-
-| CNI | Data Plane | Performance | Memory Impact | Verdict | 
-| ----- | ----- | ----- | ----- | ----- | 
-| **Cilium** | eBPF | High (Low Latency) | Low | **Selected.** Bypasses traditional `iptables` overhead, significantly reducing network latency for database replication while freeing up RAM for your application. | 
-| **Calico** | BGP (iptables) | Very Good | Moderate | Strong alternative with excellent security, but its native eBPF mode requires extra configuration outside of the RKE2 defaults. | 
-| **Canal** | VXLAN (iptables) | Moderate | Low | RKE2 Default. The VXLAN encapsulation/de-encapsulation adds network overhead that is not ideal for heavy database workloads. | 
-
-## Regional Cost & Latency Comparison
-
-The steps below use **`me-west1` (`me-west1-a`, Tel Aviv, Israel)** as the recommended region for low IAP tunnel latency with only a minor cost difference (~10% compared to US regions). You can replace the `--zone` flag with any region closer to your location. Below is how GCP billing works with the Free Trial and how regional pricing affects your $300 credit.
-
-### "Always Free" Tier vs. $300 Free Trial Credits
-
-* **GCP "Always Free" Tier (US-only):** Only covers **1 × `e2-micro`** VM and **30 GB of `pd-standard` disk** in `us-central1`, `us-west1`, or `us-east1`.
-* **$300 Free Trial Credits (Global):** Can be spent in **any GCP region**.
-
-Because this architecture provisions **3 × `e2-standard-2`** VMs (2 vCPUs, 8 GB RAM each) and **150 GB total disk** (3 × 50 GB `pd-standard`), it draws from your **$300 Free Trial credits** rather than the Always Free tier. Deploying outside the US only forfeits the 30 GB Always Free disk allowance (worth **~$1.20/month**).
-
-### Cost Breakdown Across Regions (Full 3-Node Cluster)
-
-Estimated costs for **3 × `e2-standard-2` VMs + 150 GB `pd-standard` disk** (with `--network-interface=no-address`, so $0 for external IPs):
-
-| Region | Location | 3 VMs Hourly | 3 VMs (24/7 Month) | 150 GB Disk / Month (even when stopped) | Total 24/7 Monthly | Total Runtime on $300 Credit |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`me-west1`** *(recommended)* | Tel Aviv, Israel | ~$0.221 / hr | ~$161.43 | ~$6.75 | **~$168.18 / mo** | ~1,310 hours (~54 days 24/7) |
-| **`us-central1`** | Iowa, USA | ~$0.201 / hr | ~$146.76 | ~$4.80 *(120 GB billed)* | **~$151.56 / mo** | ~1,450 hours (~60 days 24/7) |
-| **`europe-west1` / `west4`** | Belgium / Netherlands | ~$0.221 / hr | ~$161.43 | ~$6.00 | **~$167.43 / mo** | ~1,315 hours (~55 days 24/7) |
-| **`europe-west3`** | Frankfurt, Germany | ~$0.259 / hr | ~$189.06 | ~$7.20 | **~$196.26 / mo** | ~1,115 hours (~46 days 24/7) |
-
-### Practical Impact & Choosing a Closer Region
-
-1. **Minimal Cost Difference (~10%):**
-   * Choosing `me-west1` (Tel Aviv) or `europe-west1` (Belgium) over `us-central1` costs **~$0.02/hour more** for the entire 3-node cluster (~$0.16 extra for an 8-hour work session).
-   * When the VMs are **stopped**, you only pay for the 150 GB persistent disks (~$6.00–$6.75/month vs. ~$4.80/month in `us-central1`).
-2. **Much Lower IAP Tunnel Latency:**
-   * Because all `ssh` and `kubectl` commands are routed through an **Identity-Aware Proxy (IAP) TCP tunnel**, deploying in a nearby region (`me-west1`) cuts round-trip latency from ~150–180 ms down to ~5–50 ms, making interactive SSH and `kubectl` noticeably more responsive.
-3. **Free Trial Quota Check:**
-   * Free trial accounts typically have an **8 vCPU per-region quota** by default. Since 3 × `e2-standard-2` uses **6 vCPUs**, the cluster fits within the default regional quota in whichever region you choose.
-
-## Prerequisites
-
-* An active Google Cloud account (with the $300 free trial active).
-* A dedicated GCP Project (e.g., `sandbox-lab`).
-* [Google Cloud CLI (`gcloud`)](https://cloud.google.com/sdk/docs/install) installed locally.
-* `kubectl` and [`helm`](https://helm.sh/docs/intro/install/) installed locally.
-* A domain managed in **Cloudflare** (used for ACME DNS-01 TLS certificate validation and Cloudflare Tunnel).
-
-## 1. Authenticate and Configure GCP
-
-First, log in to your Google account and set your active project.
-
-```bash
-# Authenticate the gcloud CLI
-gcloud auth login
-
-# Set your target GCP Project ID
-gcloud config set project YOUR_PROJECT_ID
+    CFD -->|"Outbound Tunnel"| NAT --> CF
+    CFD -->|"Strict HTTPS (:443)"| Argo
+    CM -->|"Issues TLS Secret"| Argo
+    Argo -->|"Syncs GitOps State"| GH
 ```
 
-## 2. Provision the Infrastructure
-
-Create three `e2-standard-2` instances running Ubuntu 24.04 in `me-west1-a`.
-*To save costs (approx $11/month), these VMs are provisioned **without** external IP addresses.*
-
-```bash
-gcloud compute instances bulk create \
-    --name-pattern="rke2-node-#" \
-    --count=3 \
-    --zone=me-west1-a \
-    --machine-type=e2-standard-2 \
-    --network-interface=no-address \
-    --create-disk=boot=yes,image-family=ubuntu-2404-lts-amd64,image-project=ubuntu-os-cloud,size=50GB,type=pd-standard
-```
-
-## 3. Enable Secure Access (IAP) and Outbound Internet (Cloud NAT)
-
-Because the VMs are provisioned without external IP addresses (`--network-interface=no-address`), you need two networking rules:
-1. An **IAP firewall rule** for **inbound** SSH (`tcp:22`) and Kubernetes API (`tcp:6443`) access through the IAP tunnel.
-2. A **Cloud NAT** gateway for **outbound** internet access (required to download the RKE2 installer from `get.rke2.io`, release artifacts from GitHub, and Cilium/CoreDNS container images).
-
-### Step 3a: Allow Inbound SSH and Kubernetes API from IAP
-
-Create a firewall rule to allow SSH (`tcp:22`) and Kubernetes API (`tcp:6443`) traffic from Google's Identity-Aware Proxy (IAP) IP range:
-
-```bash
-gcloud compute firewall-rules create allow-ssh-from-iap \
-    --direction=INGRESS \
-    --action=allow \
-    --rules=tcp:22,tcp:6443 \
-    --source-ranges=35.235.240.0/20
-```
-
-### Step 3b: Enable Outbound Internet via Cloud NAT
-
-Create a Cloud Router and attach a Cloud NAT gateway in `me-west1`:
-
-```bash
-# Create a Cloud Router in me-west1
-gcloud compute routers create rke2-nat-router \
-    --network=default \
-    --region=me-west1
-
-# Attach a Cloud NAT gateway to allow outbound internet traffic for private VMs
-gcloud compute routers nats create rke2-nat-config \
-    --router=rke2-nat-router \
-    --region=me-west1 \
-    --auto-allocate-nat-external-ips \
-    --nat-all-subnet-ip-ranges
-```
-
-## 4. Install RKE2 with Cilium (HA Control Plane)
-
-### Step 4a: Initialize the First Node
-
-SSH into `rke2-node-1` using IAP:
-
-```bash
-gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a
-```
-
-Configure RKE2 to use Cilium as the CNI and set the short hostname as `node-name` before installing (GCP's default internal FQDN `<vm>.<zone>.c.<project-id>.internal` can exceed Kubernetes's 63-byte label limit):
-
-```bash
-sudo mkdir -p /etc/rancher/rke2
-sudo tee /etc/rancher/rke2/config.yaml <<EOF
-node-name: $(hostname -s)
-cni: cilium
-EOF
-```
-
-Install and start RKE2:
-
-```bash
-curl -sfL https://get.rke2.io | sudo sh -
-sudo systemctl enable --now rke2-server.service
-```
-
-Retrieve the node joining token (save this for the next step):
-
-```bash
-sudo cat /var/lib/rancher/rke2/server/node-token
-```
-
-Type `exit` to return to your local machine.
-
-### Step 4b: Join Nodes 2 and 3
-
-Repeat the following process for **both** `rke2-node-2` and `rke2-node-3`.
-
-SSH into the node:
-
-```bash
-gcloud compute ssh rke2-node-2 --tunnel-through-iap --zone=me-west1-a
-```
-
-Create the RKE2 configuration file to point to the first node, set the short `node-name`, and configure the CNI (replace `<INTERNAL_IP_OF_NODE_1>` and `<TOKEN>`):
-
-```bash
-sudo mkdir -p /etc/rancher/rke2
-sudo tee /etc/rancher/rke2/config.yaml <<EOF
-node-name: $(hostname -s)
-server: https://<INTERNAL_IP_OF_NODE_1>:9345
-token: <TOKEN>
-cni: cilium
-EOF
-```
-
-Install and start the RKE2 server component:
-
-```bash
-curl -sfL https://get.rke2.io | sudo sh -
-sudo systemctl enable --now rke2-server.service
-```
-
-## 5. Configure Local Kubectl Access
-
-Because the cluster is private, route your local `kubectl` traffic through an IAP tunnel.
-
-**1. Copy the kubeconfig file to your local machine:**
-
-```bash
-# Securely copy file from root to user on VM
-gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a \
-    --command="sudo cp /etc/rancher/rke2/rke2.yaml ~/.kubeconfig && sudo chown \$(whoami) ~/.kubeconfig"
-
-# Download file to local machine
-gcloud compute scp rke2-node-1:~/.kubeconfig ./rke2-kubeconfig.yaml \
-    --tunnel-through-iap --zone=me-west1-a
-```
-
-**2. Open the IAP Port Forwarding Tunnel:**
-*Run this in a dedicated terminal window and leave it open.*
-
-```bash
-gcloud compute start-iap-tunnel rke2-node-1 6443 \
-    --local-host-port=localhost:6443 \
-    --zone=me-west1-a
-```
-
-**3. Test the connection:**
-Open a new terminal window on your local machine and point `kubectl` to the downloaded file.
-
-```bash
-export KUBECONFIG=$(pwd)/rke2-kubeconfig.yaml
-kubectl get nodes
-```
-
-You should see all 3 nodes listed with the `control-plane,etcd,master` roles.
-
-## 6. Install cert-manager and Configure Let's Encrypt (HTTPS)
-
-Because the RKE2 cluster nodes do not have public external IPs (`--network-interface=no-address`), Let's Encrypt cannot connect inbound on port `80` for an `HTTP-01` challenge. Instead, **`cert-manager`** is configured to use the **ACME `DNS-01` challenge with Cloudflare**, reaching the Cloudflare and Let's Encrypt APIs outbound through your Cloud NAT gateway to automatically provision and renew trusted TLS certificates.
-
-### Step 6a: Create the Cloudflare API Token Secret
-
-1. In the [Cloudflare Dashboard](https://dash.cloudflare.com/profile/api-tokens) (*My Profile → API Tokens → Create Token*), use the **Edit zone DNS** template with:
-   * **Permissions:** `Zone : DNS : Edit`
-   * **Zone Resources:** `Include : Specific zone : <your-domain>`
-2. Create the `cert-manager` namespace and store the token in a Kubernetes Secret (kept out of Git):
-
-```bash
-kubectl create namespace cert-manager
-
-kubectl create secret generic cloudflare-api-token-secret \
-    -n cert-manager \
-    --from-literal=api-token='<YOUR_CLOUDFLARE_API_TOKEN>'
-```
-
-### Step 6b: Install cert-manager via Helm
-
-Add the Jetstack Helm repository and install `cert-manager` using [`cert-manager/values.yaml`](cert-manager/values.yaml):
-
-```bash
-helm repo add jetstack https://charts.jetstack.io
-helm repo update
-
-helm upgrade --install cert-manager jetstack/cert-manager \
-    --namespace cert-manager \
-    --values cert-manager/values.yaml \
-    --wait
-```
-
-Verify that all `cert-manager` pods are running:
-
-```bash
-kubectl get pods -n cert-manager
-```
-
-### Step 6c: Configure Let's Encrypt ClusterIssuers
-
-Apply [`cert-manager/cluster-issuers.yaml`](cert-manager/cluster-issuers.yaml), substituting your ACME registration email address on the fly so your personal email is not committed to the public repository:
-
-```bash
-sed 's/your-email@yourdomain.com/YOUR_ACTUAL_EMAIL/g' cert-manager/cluster-issuers.yaml | kubectl apply -f -
-```
-
-Verify that both `letsencrypt-staging` and `letsencrypt-prod` `ClusterIssuer` resources report `READY: True`:
-
-```bash
-kubectl get clusterissuer
-```
-
-## 7. Deploy Self-Managed Argo CD and Expose via Cloudflare Tunnel
-
-Argo CD is deployed using the official `argo/argo-cd` Helm chart (Standard single-replica profile) and configured using the **App-of-Apps GitOps pattern** ([`argocd/bootstrap/root-app.yaml`](argocd/bootstrap/root-app.yaml)) so that Argo CD continuously manages:
-* **Itself** ([`argocd/apps/argocd.yaml`](argocd/apps/argocd.yaml) + [`argocd/values.yaml`](argocd/values.yaml))
-* **`cert-manager`** ([`argocd/apps/cert-manager.yaml`](argocd/apps/cert-manager.yaml) + [`cert-manager/values.yaml`](cert-manager/values.yaml))
-* **Cloudflare Tunnel (`cloudflared`)** ([`argocd/apps/cloudflared.yaml`](argocd/apps/cloudflared.yaml) + [`argocd/apps/workloads/cloudflared/`](argocd/apps/workloads/cloudflared/))
-
-Because `cloudflared` establishes an outbound-only connection through Cloud NAT to Cloudflare's edge and connects internally to `argocd-server` over HTTPS using a Let's Encrypt certificate issued by `cert-manager`, the Argo CD UI and CLI are exposed on your custom domain with **end-to-end strict TLS** and zero GCP LoadBalancer or public IP costs.
-
-### Step 7a: Install Argo CD via Helm
-
-Add the Argo Helm repository and install Argo CD using [`argocd/values.yaml`](argocd/values.yaml):
-
-```bash
-helm repo add argo https://argoproj.github.io/argo-helm
-helm repo update
-
-helm upgrade --install argocd argo/argo-cd \
-    --namespace argocd \
-    --create-namespace \
-    --version 10.17.2 \
-    --values argocd/values.yaml \
-    --wait
-```
-
-Retrieve the initial `admin` password for logging into the Argo CD UI/CLI:
-
-```bash
-kubectl -n argocd get secret argocd-initial-admin-secret \
-    -o jsonpath="{.data.password}" | base64 -d; echo
-```
-
-### Step 7b: Issue a Let's Encrypt TLS Certificate for Argo CD
-
-Apply [`argocd/certificate.yaml`](argocd/certificate.yaml), substituting `argocd.yourdomain.com` with your actual subdomain so `cert-manager` provisions a signed Let's Encrypt certificate into the `argocd-server-tls` Secret:
-
-```bash
-sed 's/argocd.yourdomain.com/argocd.YOUR_ACTUAL_DOMAIN/g' argocd/certificate.yaml | kubectl apply -f -
-```
-
-Wait ~1–2 minutes for the DNS-01 challenge to complete and verify the certificate is `READY: True`:
-
-```bash
-kubectl get certificate -n argocd
-```
-
-### Step 7c: Configure the Cloudflare Tunnel Secret and Public Hostname
-
-1. In the [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/) (*Networks → Tunnels*), create a new **Cloudflared** tunnel (e.g., `rke2-cluster`) and copy the **Tunnel Token**.
-2. Create the `cloudflared` namespace and store the token in a Kubernetes Secret (kept out of Git):
-
-```bash
-kubectl create namespace cloudflared
-
-kubectl create secret generic cloudflared-token \
-    -n cloudflared \
-    --from-literal=token='<YOUR_CLOUDFLARE_TUNNEL_TOKEN>'
-```
-
-3. In the tunnel's **Public Hostname** configuration in Cloudflare Zero Trust:
-   * **Subdomain:** `argocd`
-   * **Domain:** `<your-domain>`
-   * **Service Type:** `HTTPS`
-   * **URL:** `argocd-server.argocd.svc.cluster.local:443`
-   * **Additional application settings → TLS → Origin Server Name:** `argocd.<your-domain>` *(validates the Let's Encrypt certificate served by `argocd-server`)*
-
-### Step 7d: Bootstrap GitOps (Root App-of-Apps)
-
-Apply the root `Application` ([`argocd/bootstrap/root-app.yaml`](argocd/bootstrap/root-app.yaml)), which automatically syncs all applications under [`argocd/apps/`](argocd/apps/) (`argocd`, `cert-manager`, and `cloudflared`):
-
-```bash
-kubectl apply -f argocd/bootstrap/root-app.yaml
-```
-
-Verify that all Argo CD applications are `Synced` and `Healthy`, and that the `cloudflared` pods are running:
-
-```bash
-kubectl get applications -n argocd
-kubectl get pods -n cloudflared
-```
-
-You can now access the Argo CD UI directly in your browser at `https://argocd.<your-domain>`.
-
-### Step 7e: Configure Google OIDC Authentication (Disable Default Admin)
-
-[`argocd/values.yaml`](argocd/values.yaml) disables the built-in local `admin` user (`admin.enabled: false`) and configures native OpenID Connect (OIDC) authentication against Google (`https://accounts.google.com`).
-
-1. **Create a Google OAuth 2.0 Client in GCP Console** (*APIs & Services → Credentials*):
-   * Configure the **OAuth consent screen** (*Google Auth Platform → Audience*):
-     * Set **User Type (Audience)** to **External** (required for personal `@gmail.com` accounts; **Internal** restricts sign-in to a Google Workspace organization and returns `"can only be used within its organization"`).
-     * Keep **Publishing status** set to **Testing** and add your Google email under **Test users** (this blocks all unlisted Google accounts at Google's login screen without needing app verification).
-   * Click **Create Credentials → OAuth client ID**:
-     * **Application type:** `Web application`
-     * **Authorized redirect URIs:**
-       * `https://argocd.<your-domain>/auth/callback`
-       * `http://localhost:8085/auth/callback` *(optional, for `argocd login --sso` CLI)*
-2. **Store the OAuth Client ID and Secret in Kubernetes** (labeled with `app.kubernetes.io/part-of=argocd` so Argo CD can read `$argocd-google-oidc:clientID` and `$argocd-google-oidc:clientSecret`):
-
-```bash
-kubectl create secret generic argocd-google-oidc \
-    -n argocd \
-    --from-literal=clientID='<GOOGLE_CLIENT_ID>' \
-    --from-literal=clientSecret='<GOOGLE_CLIENT_SECRET>'
-
-kubectl label secret argocd-google-oidc -n argocd app.kubernetes.io/part-of=argocd
-```
-
-3. **Set your Argo CD URL and RBAC Admin Email in-cluster** (kept out of Git and preserved across syncs via `ignoreDifferences` in [`argocd/apps/argocd.yaml`](argocd/apps/argocd.yaml)):
-
-```bash
-# Set the external URL on argocd-cm for OIDC redirect callbacks
-kubectl patch configmap argocd-cm -n argocd \
-    --type merge \
-    -p '{"data":{"url":"https://argocd.YOUR_ACTUAL_DOMAIN"}}'
-
-# Grant role:admin to your Google account email on argocd-rbac-cm
-kubectl patch configmap argocd-rbac-cm -n argocd \
-    --type merge \
-    -p '{"data":{"policy.csv":"g, YOUR_GOOGLE_EMAIL, role:admin"}}'
-```
-
-4. **Granting Access to Additional Google Users (Optional):**
-   Because access is protected by both Google OAuth **Testing** mode and Argo CD RBAC (`policy.default: ""`), adding another user requires updating both layers:
-   * **GCP Console (*OAuth consent screen / Audience → Test users*):** Click **+ Add Users** and add the user's Google email (supports up to 100 test users).
-   * **Argo CD RBAC (`argocd-rbac-cm`):** Append a `g, <email>, <role>` line (`role:readonly` for view-only access or `role:admin` for full admin access):
-
-```bash
-kubectl patch configmap argocd-rbac-cm -n argocd \
-    --type merge \
-    -p '{"data":{"policy.csv":"g, YOUR_GOOGLE_EMAIL, role:admin\ng, COLLEAGUE_GOOGLE_EMAIL, role:readonly"}}'
-```
-
-## Cost Management Tip: Stopping and Starting the Cluster
-
-To stretch your $300 free trial, shut down the instances when you are not actively using the cluster and start them back up when needed.
-
-### Stop the Instances
-
-```bash
-gcloud compute instances stop rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-west1-a
-```
-
-*Note: You will still incur a small persistent disk storage fee (~$6.75/month total in `me-west1`) while the VMs are stopped.*
-
-### Start the Instances
-
-Because `rke2-server.service` was enabled with `systemctl enable` and GCP preserves each VM's internal IP address across stops/starts, starting the instances automatically brings the RKE2 cluster back online:
-
-```bash
-gcloud compute instances start rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-west1-a
-```
-
-Once the VMs are running, re-open the IAP port-forwarding tunnel from [Step 5](#5-configure-local-kubectl-access) to resume using `kubectl`.
-
-### Check Instance Status
-
-Verify whether the nodes are `RUNNING` or `TERMINATED`:
-
-```bash
-gcloud compute instances list --filter="name~'^rke2-node-'"
-```
-
-### Delete the Cluster (Full Cleanup)
-
-To permanently remove the VMs, their attached persistent disks (which are configured with `autoDelete: true` by default), the Cloud NAT router, and the firewall rule so no charges remain:
-
-```bash
-# Delete the 3 VMs and their boot disks
-gcloud compute instances delete rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-west1-a
-
-# Delete the Cloud Router (and its attached Cloud NAT configuration)
-gcloud compute routers delete rke2-nat-router --region=me-west1
-
-# Delete the IAP SSH firewall rule
-gcloud compute firewall-rules delete allow-ssh-from-iap
-```
-
-Verify that all disks have been removed:
-
-```bash
-gcloud compute disks list
+---
+
+## Documentation Guides
+
+| # | Guide | Description |
+| :--- | :--- | :--- |
+| **1** | [**Architecture & Regional Cost Comparison**](docs/01-architecture-and-costs.md) | Why **RKE2** and **Cilium CNI** were chosen, GCP "Always Free" vs. $300 Free Trial credits, and regional cost/latency comparison (`me-west1` vs. US/EU). |
+| **2** | [**GCP Infrastructure & RKE2 Cluster Setup**](docs/02-gcp-rke2-cluster-setup.md) | Provisioning the 3 private Ubuntu 24.04 VMs, IAP firewall rules, Cloud NAT, bootstrapping the HA RKE2 + Cilium cluster, and local `kubectl` access. |
+| **3** | [**`cert-manager` & Let's Encrypt (HTTPS)**](docs/03-cert-manager-letsencrypt.md) | Installing `cert-manager` via Helm and configuring `letsencrypt-staging` and `letsencrypt-prod` `ClusterIssuer` resources using Cloudflare DNS-01. |
+| **4** | [**Argo CD GitOps, Cloudflare Tunnel & Google OIDC**](docs/04-argocd-cloudflare-oidc.md) | Deploying Argo CD, issuing its Let's Encrypt certificate, exposing it via Cloudflare Tunnel (`cloudflared`), bootstrapping the Root App-of-Apps, and enabling Google OIDC login. |
+| **5** | [**Cluster Operations & Cost Management**](docs/05-operations-and-cleanup.md) | Stopping and starting the cluster VMs to conserve Free Trial credits, checking node status, and full cluster teardown. |
+
+---
+
+## Repository Structure
+
+```text
+devops-exercise/
+├── README.md                                           # Overview, architecture & documentation index
+├── docs/                                               # Modular step-by-step guides
+│   ├── 01-architecture-and-costs.md
+│   ├── 02-gcp-rke2-cluster-setup.md
+│   ├── 03-cert-manager-letsencrypt.md
+│   ├── 04-argocd-cloudflare-oidc.md
+│   └── 05-operations-and-cleanup.md
+├── cert-manager/
+│   ├── values.yaml                                     # Helm values for jetstack/cert-manager
+│   └── cluster-issuers.yaml                            # Let's Encrypt Staging & Prod ClusterIssuers (DNS-01)
+└── argocd/
+    ├── values.yaml                                     # Helm values for argo/argo-cd (Google OIDC enabled)
+    ├── certificate.yaml                                # Let's Encrypt Certificate for argocd-server-tls
+    ├── bootstrap/
+    │   └── root-app.yaml                               # Root App-of-Apps watching argocd/apps/
+    └── apps/
+        ├── argocd.yaml                                 # Argo CD self-management Application
+        ├── cert-manager.yaml                           # cert-manager GitOps Application
+        ├── cloudflared.yaml                            # Cloudflare Tunnel GitOps Application
+        └── workloads/
+            └── cloudflared/
+                ├── namespace.yaml
+                └── deployment.yaml
 ```
