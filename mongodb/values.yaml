@@ -1,0 +1,59 @@
+# Helm values for bitnami/mongodb (Chart 16.5.45 / MongoDB 8.0.13)
+# Managed via Argo CD (argocd/apps/mongodb.yaml)
+
+global:
+  security:
+    # Bitnami migrated non-latest tags on Docker Hub to docker.io/bitnamilegacy/*
+    allowInsecureImages: true
+
+image:
+  registry: docker.io
+  repository: bitnamilegacy/mongodb
+  tag: 8.0.13-debian-12-r0
+  pullPolicy: IfNotPresent
+
+# 3-Node ReplicaSet architecture (1 replica scheduled on each of the 3 RKE2 nodes)
+architecture: replicaset
+replicaCount: 3
+podAntiAffinityPreset: hard
+
+# Arbiter is disabled because 3 data-bearing replicas already provide a full voting quorum
+arbiter:
+  enabled: false
+
+# Ephemeral storage (emptyDir) as requested — no PersistentVolumeClaims provisioned
+persistence:
+  enabled: false
+
+# Resource requests & limits sized for 3 x e2-standard-2 (2 vCPU, 8 GiB RAM) nodes:
+# - CPU request (250m + 50m exporter = 300m total) fits within the ~465m unrequested CPU
+#   remaining on rke2-node-3 so all 3 replicas schedule cleanly with hard anti-affinity.
+# - CPU limit (1000m) allows bursting up to 1 full vCPU during elections and queries.
+# - Memory limit (2Gi) sets WiredTiger internal cache to 512 MB (50% of (2Gi - 1Gi)),
+#   leaving 1.5 GiB headroom inside the container while keeping >2.8 GiB free on each node.
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+# Prometheus Metrics Exporter sidecar (port 9216/TCP, Service: mongodb-metrics)
+metrics:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/mongodb-exporter
+    tag: 0.47.0-debian-12-r1
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  service:
+    type: ClusterIP
+    port: 9216
