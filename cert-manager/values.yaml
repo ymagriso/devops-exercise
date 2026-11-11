@@ -1,0 +1,35 @@
+# Helm values for jetstack/cert-manager
+# Chart repository: https://charts.jetstack.io
+
+crds:
+  enabled: true
+  keep: true
+
+# Use public recursive nameservers for ACME DNS-01 propagation checks
+# instead of GCP's internal metadata DNS (169.254.169.254).
+extraArgs:
+  - --dns01-recursive-nameservers-only
+  - --dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+
+webhook:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
+cainjector:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi

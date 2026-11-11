@@ -22,6 +22,10 @@ The infrastructure is optimized to run within the boundaries of the $300 GCP Fre
   - [Step 4a: Initialize the First Node](#step-4a-initialize-the-first-node)
   - [Step 4b: Join Nodes 2 and 3](#step-4b-join-nodes-2-and-3)
 - [5. Configure Local Kubectl Access](#5-configure-local-kubectl-access)
+- [6. Install cert-manager and Configure Let's Encrypt (HTTPS)](#6-install-cert-manager-and-configure-lets-encrypt-https)
+  - [Step 6a: Create the Cloudflare API Token Secret](#step-6a-create-the-cloudflare-api-token-secret)
+  - [Step 6b: Install cert-manager via Helm](#step-6b-install-cert-manager-via-helm)
+  - [Step 6c: Configure Let's Encrypt ClusterIssuers](#step-6c-configure-lets-encrypt-clusterissuers)
 - [Cost Management Tip: Stopping and Starting the Cluster](#cost-management-tip-stopping-and-starting-the-cluster)
   - [Stop the Instances](#stop-the-instances)
   - [Start the Instances](#start-the-instances)
@@ -92,7 +96,8 @@ Estimated costs for **3 × `e2-standard-2` VMs + 150 GB `pd-standard` disk** (wi
 * An active Google Cloud account (with the $300 free trial active).
 * A dedicated GCP Project (e.g., `sandbox-lab`).
 * [Google Cloud CLI (`gcloud`)](https://cloud.google.com/sdk/docs/install) installed locally.
-* `kubectl` installed locally.
+* `kubectl` and [`helm`](https://helm.sh/docs/intro/install/) installed locally.
+* A domain managed in **Cloudflare** (used for ACME DNS-01 TLS certificate validation and Cloudflare Tunnel).
 
 ## 1. Authenticate and Configure GCP
 
@@ -255,6 +260,59 @@ kubectl get nodes
 ```
 
 You should see all 3 nodes listed with the `control-plane,etcd,master` roles.
+
+## 6. Install cert-manager and Configure Let's Encrypt (HTTPS)
+
+Because the RKE2 cluster nodes do not have public external IPs (`--network-interface=no-address`), Let's Encrypt cannot connect inbound on port `80` for an `HTTP-01` challenge. Instead, **`cert-manager`** is configured to use the **ACME `DNS-01` challenge with Cloudflare**, reaching the Cloudflare and Let's Encrypt APIs outbound through your Cloud NAT gateway to automatically provision and renew trusted TLS certificates.
+
+### Step 6a: Create the Cloudflare API Token Secret
+
+1. In the [Cloudflare Dashboard](https://dash.cloudflare.com/profile/api-tokens) (*My Profile → API Tokens → Create Token*), use the **Edit zone DNS** template with:
+   * **Permissions:** `Zone : DNS : Edit`
+   * **Zone Resources:** `Include : Specific zone : <your-domain>`
+2. Create the `cert-manager` namespace and store the token in a Kubernetes Secret (kept out of Git):
+
+```bash
+kubectl create namespace cert-manager
+
+kubectl create secret generic cloudflare-api-token-secret \
+    -n cert-manager \
+    --from-literal=api-token='<YOUR_CLOUDFLARE_API_TOKEN>'
+```
+
+### Step 6b: Install cert-manager via Helm
+
+Add the Jetstack Helm repository and install `cert-manager` using [`cert-manager/values.yaml`](cert-manager/values.yaml):
+
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+
+helm upgrade --install cert-manager jetstack/cert-manager \
+    --namespace cert-manager \
+    --values cert-manager/values.yaml \
+    --wait
+```
+
+Verify that all `cert-manager` pods are running:
+
+```bash
+kubectl get pods -n cert-manager
+```
+
+### Step 6c: Configure Let's Encrypt ClusterIssuers
+
+Apply [`cert-manager/cluster-issuers.yaml`](cert-manager/cluster-issuers.yaml), substituting your ACME registration email address on the fly so your personal email is not committed to the public repository:
+
+```bash
+sed 's/your-email@yourdomain.com/YOUR_ACTUAL_EMAIL/g' cert-manager/cluster-issuers.yaml | kubectl apply -f -
+```
+
+Verify that both `letsencrypt-staging` and `letsencrypt-prod` `ClusterIssuer` resources report `READY: True`:
+
+```bash
+kubectl get clusterissuer
+```
 
 ## Cost Management Tip: Stopping and Starting the Cluster
 
