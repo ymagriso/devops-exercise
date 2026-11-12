@@ -24,21 +24,30 @@ spec:
               value: /var/lib/registry
             - name: REGISTRY_HTTP_ADDR
               value: 0.0.0.0:5000
+            - name: REGISTRY_HTTP_TLS_CERTIFICATE
+              value: /certs/tls.crt
+            - name: REGISTRY_HTTP_TLS_KEY
+              value: /certs/tls.key
           ports:
-            - name: http
+            - name: https
               containerPort: 5000
               protocol: TCP
           volumeMounts:
             - name: shared-storage
               mountPath: /var/lib/registry
+            - name: registry-cert
+              mountPath: /certs
+              readOnly: true
           livenessProbe:
             httpGet:
+              scheme: HTTPS
               path: /
               port: 5000
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
             httpGet:
+              scheme: HTTPS
               path: /
               port: 5000
             initialDelaySeconds: 2
@@ -55,3 +64,6 @@ spec:
           hostPath:
             path: /shared/docker-registry
             type: DirectoryOrCreate
+        - name: registry-cert
+          secret:
+            secretName: docker-registry-tls

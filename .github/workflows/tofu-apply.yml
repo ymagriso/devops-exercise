@@ -310,6 +310,30 @@ jobs:
             else
               echo "argocd-server already has the custom TLS secret loaded."
             fi
+
+            REGISTRY_CERT_CACHE_URI="gs://${PROJECT_ID}-tofu-state/certs/docker-registry-tls.json"
+
+            # Restore cached Docker Registry TLS secret from GCS on fresh cluster builds to avoid Let's Encrypt rate limits
+            if ! kubectl get secret docker-registry-tls -n docker-registry >/dev/null 2>&1; then
+              if gcloud storage ls "${REGISTRY_CERT_CACHE_URI}" >/dev/null 2>&1; then
+                echo "Restoring cached docker-registry-tls Secret from ${REGISTRY_CERT_CACHE_URI}..."
+                gcloud storage cat "${REGISTRY_CERT_CACHE_URI}" | kubectl apply -f -
+              fi
+            fi
+
+            echo "Configuring Docker Registry domain and Let's Encrypt certificates..."
+            sed "s/registry.yourdomain.com/registry.${CUSTOM_DOMAIN}/g" argocd/certificate-registry.yaml | kubectl apply -f -
+
+            echo "Waiting for Docker Registry TLS certificate to be issued..."
+            kubectl wait --for=condition=Ready certificate/docker-registry-tls -n docker-registry --timeout=180s 2>/dev/null || true
+
+            # Persist valid TLS secret to GCS state bucket so cluster destroy/recreate cycles reuse it
+            if kubectl get secret docker-registry-tls -n docker-registry >/dev/null 2>&1; then
+              echo "Caching docker-registry-tls Secret to ${REGISTRY_CERT_CACHE_URI}..."
+              kubectl get secret docker-registry-tls -n docker-registry -o json \
+                | jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.managedFields, .metadata.ownerReferences)' \
+                | gcloud storage cp - "${REGISTRY_CERT_CACHE_URI}"
+            fi
           fi
 
           echo "Bootstrapping Argo CD Root Application..."

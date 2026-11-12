@@ -83,6 +83,7 @@ devops-exercise/
 └── argocd/
     ├── values.yaml                                     # Helm values for argo/argo-cd (Google OIDC enabled)
     ├── certificate.yaml                                # Let's Encrypt Certificate for argocd-server-tls
+    ├── certificate-registry.yaml                       # Let's Encrypt Certificate for docker-registry-tls
     ├── bootstrap/
     │   └── root-app.yaml                               # Root App-of-Apps watching argocd/apps/
     └── apps/
@@ -99,8 +100,8 @@ devops-exercise/
             │   └── deployment.yaml
             ├── docker-registry/
             │   ├── namespace.yaml
-            │   ├── service.yaml
-            │   └── deployment.yaml                     # Storing blobs & manifests on /shared/docker-registry
+            │   ├── service.yaml                        # Exposes port 443 (HTTPS) & 5000
+            │   └── deployment.yaml                     # Native TLS with Let's Encrypt cert, storage on /shared/docker-registry
             ├── system-upgrade-controller/
             │   └── kustomization.yaml                  # Upstream pinned SUC manifests & CRDs
             └── rke2-upgrade-plans/
