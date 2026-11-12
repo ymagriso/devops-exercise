@@ -231,13 +231,32 @@ jobs:
           fi
 
           if [ -n "$CUSTOM_DOMAIN" ]; then
+            PROJECT_ID=$(gcloud config get-value project)
+            CERT_CACHE_URI="gs://${PROJECT_ID}-tofu-state/certs/argocd-server-tls.json"
+
+            # Restore cached TLS secret from GCS on fresh cluster builds to avoid Let's Encrypt rate limits
+            if ! kubectl get secret argocd-server-tls -n argocd >/dev/null 2>&1; then
+              if gcloud storage ls "${CERT_CACHE_URI}" >/dev/null 2>&1; then
+                echo "Restoring cached argocd-server-tls Secret from ${CERT_CACHE_URI}..."
+                gcloud storage cat "${CERT_CACHE_URI}" | kubectl apply -f -
+              fi
+            fi
+
             echo "Configuring domain and Let's Encrypt certificates..."
             sed "s/argocd.yourdomain.com/argocd.${CUSTOM_DOMAIN}/g" argocd/certificate.yaml | kubectl apply -f -
             kubectl -n argocd patch cm argocd-cm --type merge \
               -p "{\"data\": {\"url\": \"https://argocd.${CUSTOM_DOMAIN}\"}}" 2>/dev/null || true
 
             echo "Waiting for Argo CD TLS certificate to be issued..."
-            kubectl wait --for=condition=Ready certificate/argocd-server-tls -n argocd --timeout=120s 2>/dev/null || true
+            kubectl wait --for=condition=Ready certificate/argocd-server-tls -n argocd --timeout=180s 2>/dev/null || true
+
+            # Persist valid TLS secret to GCS state bucket so cluster destroy/recreate cycles reuse it
+            if kubectl get secret argocd-server-tls -n argocd >/dev/null 2>&1; then
+              echo "Caching argocd-server-tls Secret to ${CERT_CACHE_URI}..."
+              kubectl get secret argocd-server-tls -n argocd -o json \
+                | jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.managedFields, .metadata.ownerReferences)' \
+                | gcloud storage cp - "${CERT_CACHE_URI}"
+            fi
 
             # Restart argocd-server if it has not yet loaded the issued certificate
             if ! kubectl logs -n argocd deployment/argocd-server --tail=50 2>/dev/null | grep -q "Loading TLS configuration from secret argocd/argocd-server-tls"; then
