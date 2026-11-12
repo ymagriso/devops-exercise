@@ -158,12 +158,16 @@ jobs:
               --from-literal=mongodb-replica-set-key="$MONGO_REPLICA_KEY" --dry-run=client -o yaml | kubectl apply -f -
           fi
 
-          echo "Installing cert-manager via Helm..."
+          # Extract chart versions dynamically from Argo CD manifests (Single Source of Truth)
+          CERT_MANAGER_VERSION=$(python3 -c "import yaml; print(yaml.safe_load(open('argocd/apps/cert-manager.yaml'))['spec']['sources'][0]['targetRevision'])" 2>/dev/null || grep 'targetRevision:' argocd/apps/cert-manager.yaml | head -n1 | awk '{print $2}')
+          ARGOCD_VERSION=$(python3 -c "import yaml; print(yaml.safe_load(open('argocd/apps/argocd.yaml'))['spec']['sources'][0]['targetRevision'])" 2>/dev/null || grep 'targetRevision:' argocd/apps/argocd.yaml | head -n1 | awk '{print $2}')
+
+          echo "Installing cert-manager (version: ${CERT_MANAGER_VERSION}) via Helm..."
           helm repo add jetstack https://charts.jetstack.io
           helm repo update
           helm upgrade --install cert-manager jetstack/cert-manager \
             --namespace cert-manager \
-            --version v1.21.3 \
+            --version "${CERT_MANAGER_VERSION}" \
             --values cert-manager/values.yaml \
             --wait
 
@@ -172,12 +176,12 @@ jobs:
             sed "s/your-email@yourdomain.com/${ACME_EMAIL}/g" cert-manager/cluster-issuers.yaml | kubectl apply -f -
           fi
 
-          echo "Installing Argo CD via Helm..."
+          echo "Installing Argo CD (version: ${ARGOCD_VERSION}) via Helm..."
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd \
-            --version 10.17.2 \
+            --version "${ARGOCD_VERSION}" \
             --values argocd/values.yaml \
             --wait
 
