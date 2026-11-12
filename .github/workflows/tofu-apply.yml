@@ -92,8 +92,17 @@ jobs:
           cd tofu
           tofu apply -auto-approve -var="project_id=${PROJECT_ID}"
 
-      - name: Wait for Cluster Bootstrap & Retrieve Kubeconfig
+      - name: Bootstrap Cluster, Core Services, Secrets & Domain
         if: env.ACTION == 'apply' && github.event_name != 'pull_request'
+        env:
+          KUBECONFIG: ${{ github.workspace }}/rke2-kubeconfig.yaml
+          CUSTOM_DOMAIN: ${{ secrets.CUSTOM_DOMAIN }}
+          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARED_TUNNEL_TOKEN }}
+          GOOGLE_OIDC_SECRET: ${{ secrets.ARGOCD_GOOGLE_OIDC_CLIENT_SECRET }}
+          MONGO_ROOT_PASSWORD: ${{ secrets.MONGODB_ROOT_PASSWORD }}
+          MONGO_REPLICA_KEY: ${{ secrets.MONGODB_REPLICA_SET_KEY }}
         run: |
           echo "Waiting for rke2-node-1 to finish initialization..."
           for i in {1..40}; do
@@ -106,29 +115,19 @@ jobs:
             sleep 15
           done
 
-          # Fetch kubeconfig locally
+          echo "Fetching kubeconfig from rke2-node-1..."
           gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a \
             --command="sudo cat /etc/rancher/rke2/rke2.yaml" > rke2-kubeconfig.yaml
 
-          # Open background IAP tunnel
+          echo "Starting background IAP port-forwarding tunnel to rke2-node-1:6443..."
           gcloud compute start-iap-tunnel rke2-node-1 6443 --local-host-port=localhost:6443 --zone=me-west1-a &
+          TUNNEL_PID=$!
+          trap "kill $TUNNEL_PID 2>/dev/null || true" EXIT
           sleep 5
 
           export KUBECONFIG=$(pwd)/rke2-kubeconfig.yaml
           kubectl get nodes -o wide
 
-      - name: Bootstrap Core Services, Secrets & Domain
-        if: env.ACTION == 'apply' && github.event_name != 'pull_request'
-        env:
-          KUBECONFIG: ${{ github.workspace }}/rke2-kubeconfig.yaml
-          CUSTOM_DOMAIN: ${{ secrets.CUSTOM_DOMAIN }}
-          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARED_TUNNEL_TOKEN }}
-          GOOGLE_OIDC_SECRET: ${{ secrets.ARGOCD_GOOGLE_OIDC_CLIENT_SECRET }}
-          MONGO_ROOT_PASSWORD: ${{ secrets.MONGODB_ROOT_PASSWORD }}
-          MONGO_REPLICA_KEY: ${{ secrets.MONGODB_REPLICA_SET_KEY }}
-        run: |
           echo "Creating core namespaces..."
           kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace cloudflared --dry-run=client -o yaml | kubectl apply -f -
