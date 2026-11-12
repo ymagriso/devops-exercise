@@ -57,14 +57,22 @@ resource "google_compute_instance" "rke2_node" {
     scopes = ["cloud-platform"]
   }
 
-  metadata_startup_script = templatefile("${path.module}/startup.sh.tftpl", {
-    is_init_node = count.index == 0
-    node_name    = "rke2-node-${count.index + 1}"
-    node_ip      = cidrhost(var.subnet_cidr, 11 + count.index)
-    init_node_ip = cidrhost(var.subnet_cidr, 11)
-    token        = random_password.rke2_token.result
-    rke2_version = var.rke2_version
-  })
+  # IMPORTANT: use metadata["startup-script"], NOT `metadata_startup_script`.
+  # In the google provider, `metadata_startup_script` is ForceNew: any change
+  # (e.g. an RKE2 version bump) destroys and recreates ALL nodes at once,
+  # wiping etcd and persistent data. `metadata` is updated in place; the new
+  # script only applies to newly created nodes. Running nodes are upgraded
+  # in place by the System Upgrade Controller (argocd/apps/workloads/rke2-upgrade-plans).
+  metadata = {
+    startup-script = templatefile("${path.module}/startup.sh.tftpl", {
+      is_init_node = count.index == 0
+      node_name    = "rke2-node-${count.index + 1}"
+      node_ip      = cidrhost(var.subnet_cidr, 11 + count.index)
+      init_node_ip = cidrhost(var.subnet_cidr, 11)
+      token        = random_password.rke2_token.result
+      rke2_version = var.rke2_version
+    })
+  }
 
   labels = {
     managed-by = "opentofu"

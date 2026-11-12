@@ -11,6 +11,11 @@ on:
         options:
           - apply
           - plan
+      allow_node_replacement:
+        description: "Allow destroying/replacing RKE2 node VMs (DANGEROUS: wipes etcd and all cluster data)"
+        required: false
+        default: false
+        type: boolean
   pull_request:
     branches:
       - main
@@ -78,19 +83,39 @@ jobs:
 
       - name: OpenTofu Plan
         id: plan
-        if: env.ACTION == 'plan'
         run: |
           PROJECT_ID=$(gcloud config get-value project)
           cd tofu
-          tofu plan -var="project_id=${PROJECT_ID}"
+          tofu plan -input=false -out=tfplan -var="project_id=${PROJECT_ID}"
+
+      - name: Guard Against Node VM Replacement
+        env:
+          ALLOW_NODE_REPLACEMENT: ${{ github.event.inputs.allow_node_replacement || 'false' }}
+        run: |
+          cd tofu
+          # Any delete action on an existing node VM (destroy or replace) destroys the whole
+          # HA cluster's etcd/data. Block it unless explicitly allowed via workflow_dispatch.
+          REPLACED=$(tofu show -json tfplan | jq -r '.resource_changes[]
+            | select(.type == "google_compute_instance")
+            | select(.change.actions | index("delete"))
+            | "\(.address): \(.change.actions | join("/"))"')
+          if [ -n "$REPLACED" ]; then
+            echo "::warning::This plan destroys or replaces RKE2 node VMs:"
+            echo "$REPLACED"
+            if [ "$ALLOW_NODE_REPLACEMENT" != "true" ]; then
+              echo "::error::Refusing to continue: node VM replacement wipes the cluster. RKE2 upgrades must go through the System Upgrade Controller. Re-run manually with allow_node_replacement=true if this is intended."
+              exit 1
+            fi
+          else
+            echo "No node VM destruction or replacement in this plan."
+          fi
 
       - name: OpenTofu Apply
         id: apply
         if: env.ACTION == 'apply' && github.event_name != 'pull_request'
         run: |
-          PROJECT_ID=$(gcloud config get-value project)
           cd tofu
-          tofu apply -auto-approve -var="project_id=${PROJECT_ID}"
+          tofu apply -input=false -auto-approve tfplan
 
       - name: Bootstrap Cluster, Core Services, Secrets & Domain
         if: env.ACTION == 'apply' && github.event_name != 'pull_request'
@@ -206,13 +231,32 @@ jobs:
           fi
 
           if [ -n "$CUSTOM_DOMAIN" ]; then
+            PROJECT_ID=$(gcloud config get-value project)
+            CERT_CACHE_URI="gs://${PROJECT_ID}-tofu-state/certs/argocd-server-tls.json"
+
+            # Restore cached TLS secret from GCS on fresh cluster builds to avoid Let's Encrypt rate limits
+            if ! kubectl get secret argocd-server-tls -n argocd >/dev/null 2>&1; then
+              if gcloud storage ls "${CERT_CACHE_URI}" >/dev/null 2>&1; then
+                echo "Restoring cached argocd-server-tls Secret from ${CERT_CACHE_URI}..."
+                gcloud storage cat "${CERT_CACHE_URI}" | kubectl apply -f -
+              fi
+            fi
+
             echo "Configuring domain and Let's Encrypt certificates..."
             sed "s/argocd.yourdomain.com/argocd.${CUSTOM_DOMAIN}/g" argocd/certificate.yaml | kubectl apply -f -
             kubectl -n argocd patch cm argocd-cm --type merge \
               -p "{\"data\": {\"url\": \"https://argocd.${CUSTOM_DOMAIN}\"}}" 2>/dev/null || true
 
             echo "Waiting for Argo CD TLS certificate to be issued..."
-            kubectl wait --for=condition=Ready certificate/argocd-server-tls -n argocd --timeout=120s 2>/dev/null || true
+            kubectl wait --for=condition=Ready certificate/argocd-server-tls -n argocd --timeout=180s 2>/dev/null || true
+
+            # Persist valid TLS secret to GCS state bucket so cluster destroy/recreate cycles reuse it
+            if kubectl get secret argocd-server-tls -n argocd >/dev/null 2>&1; then
+              echo "Caching argocd-server-tls Secret to ${CERT_CACHE_URI}..."
+              kubectl get secret argocd-server-tls -n argocd -o json \
+                | jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.managedFields, .metadata.ownerReferences)' \
+                | gcloud storage cp - "${CERT_CACHE_URI}"
+            fi
 
             # Restart argocd-server if it has not yet loaded the issued certificate
             if ! kubectl logs -n argocd deployment/argocd-server --tail=50 2>/dev/null | grep -q "Loading TLS configuration from secret argocd/argocd-server-tls"; then
