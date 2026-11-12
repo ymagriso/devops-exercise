@@ -38,6 +38,8 @@ This repository includes complete OpenTofu declarations in the [`tofu/`](../tofu
 * **Dedicated Custom VPC & Subnet (`10.10.0.0/24`)**: Complete isolation from the default network with zero additional GCP cost.
 * **Deterministic Static Internal IPs**: `rke2-node-1` (`10.10.0.11`), `rke2-node-2` (`10.10.0.12`), and `rke2-node-3` (`10.10.0.13`).
 * **Automated Cluster Bootstrapping**: Node 1 initializes RKE2 with Cilium CNI and generates the supervisor endpoint; Nodes 2 & 3 poll port `9345/ping` and join the HA control plane automatically via VM metadata startup scripts.
+* **Separation of Day-0 Bootstrap and Day-2 Upgrades**: The startup script installs RKE2 on new nodes at boot time. Running cluster nodes are upgraded in-place without VM teardown or downtime using the **System Upgrade Controller** (see [Guide 6: Automated In-Place RKE2 Upgrades](06-operations-and-cleanup.md#automated-in-place-rke2-upgrades-via-system-upgrade-controller-suc)).
+* **VM Recreation Guardrails**: Startup scripts are defined via `metadata = { startup-script = ... }` (updated in-place on GCP) instead of `metadata_startup_script` (which forces VM replacement). Furthermore, the GitHub Actions deployment workflow actively checks the OpenTofu execution plan and blocks any deletion or replacement of cluster VM instances unless specifically permitted via `allow_node_replacement: true`.
 * **Intra-Cluster & IAP Firewall Rules**: Allows traffic from Google IAP (`35.235.240.0/20`) for SSH and Kubernetes API, and opens all intra-subnet communication across the cluster nodes.
 
 ### 1. One-Time GCP Workload Identity Federation (WIF) Setup
