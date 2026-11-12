@@ -1,0 +1,13 @@
+# Copy this file to terraform.tfvars and populate with your settings:
+# cp terraform.tfvars.example terraform.tfvars
+
+project_id      = "your-gcp-project-id"
+region          = "me-west1"
+zone            = "me-west1-a"
+vpc_name        = "rke2-vpc"
+subnet_cidr     = "10.10.0.0/24"
+node_count      = 3
+machine_type    = "e2-standard-2"
+boot_disk_size  = 50
+boot_disk_image = "ubuntu-os-cloud/ubuntu-2404-lts-amd64"
+rke2_version    = ""

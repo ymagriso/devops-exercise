@@ -1,0 +1,167 @@
+name: "OpenTofu Apply & Cluster Bootstrap"
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "OpenTofu Action to execute"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - apply
+          - plan
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "tofu/**"
+      - ".github/workflows/tofu-apply.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "tofu/**"
+      - ".github/workflows/tofu-apply.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: opentofu-infra
+  cancel-in-progress: false
+
+jobs:
+  tofu:
+    name: "OpenTofu Plan/Apply & Bootstrap"
+    runs-on: ubuntu-latest
+    env:
+      ACTION: ${{ github.event_name == 'pull_request' && 'plan' || github.event.inputs.action || 'apply' }}
+      TF_IN_AUTOMATION: "1"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7.0.1
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3.0.1
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2.0.2
+        with:
+          tofu_version: "1.13.9"
+
+      - name: OpenTofu Init & Format / Validate
+        run: |
+          cd tofu
+          tofu fmt -check
+          tofu init
+          tofu validate
+
+      - name: OpenTofu Plan
+        id: plan
+        if: env.ACTION == 'plan'
+        run: |
+          PROJECT_ID=$(gcloud config get-value project)
+          cd tofu
+          tofu plan -var="project_id=${PROJECT_ID}"
+
+      - name: OpenTofu Apply
+        id: apply
+        if: env.ACTION == 'apply' && github.event_name != 'pull_request'
+        run: |
+          PROJECT_ID=$(gcloud config get-value project)
+          cd tofu
+          tofu apply -auto-approve -var="project_id=${PROJECT_ID}"
+
+      - name: Wait for Cluster Bootstrap & Retrieve Kubeconfig
+        if: env.ACTION == 'apply' && github.event_name != 'pull_request'
+        run: |
+          echo "Waiting for rke2-node-1 to finish initialization..."
+          for i in {1..40}; do
+            if gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a \
+              --command="sudo /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes" 2>/dev/null; then
+              echo "rke2-node-1 control-plane is up and healthy!"
+              break
+            fi
+            echo "Waiting for RKE2 startup script on rke2-node-1 (attempt $i/40)..."
+            sleep 15
+          done
+
+          # Fetch kubeconfig locally
+          gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a \
+            --command="sudo cat /etc/rancher/rke2/rke2.yaml" > rke2-kubeconfig.yaml
+
+          # Open background IAP tunnel
+          gcloud compute start-iap-tunnel rke2-node-1 6443 --local-host-port=localhost:6443 --zone=me-west1-a &
+          sleep 5
+
+          export KUBECONFIG=$(pwd)/rke2-kubeconfig.yaml
+          kubectl get nodes -o wide
+
+      - name: Inject Kubernetes Secrets & Configure Domain
+        if: env.ACTION == 'apply' && github.event_name != 'pull_request'
+        env:
+          KUBECONFIG: ${{ github.workspace }}/rke2-kubeconfig.yaml
+          CUSTOM_DOMAIN: ${{ secrets.CUSTOM_DOMAIN }}
+          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARED_TUNNEL_TOKEN }}
+          GOOGLE_OIDC_SECRET: ${{ secrets.ARGOCD_GOOGLE_OIDC_CLIENT_SECRET }}
+          MONGO_ROOT_PASSWORD: ${{ secrets.MONGODB_ROOT_PASSWORD }}
+          MONGO_REPLICA_KEY: ${{ secrets.MONGODB_REPLICA_SET_KEY }}
+        run: |
+          echo "Creating core namespaces..."
+          kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace cloudflare --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace mongodb --dry-run=client -o yaml | kubectl apply -f -
+
+          echo "Injecting secrets from GitHub Secrets..."
+          if [ -n "$CF_API_TOKEN" ]; then
+            kubectl create secret generic cloudflare-api-token-secret -n cert-manager \
+              --from-literal=api-token="$CF_API_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          if [ -n "$CF_TUNNEL_TOKEN" ]; then
+            kubectl create secret generic cloudflared-token -n cloudflare \
+              --from-literal=TUNNEL_TOKEN="$CF_TUNNEL_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          if [ -n "$GOOGLE_OIDC_SECRET" ]; then
+            kubectl create secret generic argocd-google-oidc -n argocd \
+              --from-literal=oidc.google.clientSecret="$GOOGLE_OIDC_SECRET" --dry-run=client -o yaml | kubectl apply -f -
+            kubectl label secret argocd-google-oidc -n argocd app.kubernetes.io/part-of=argocd --overwrite
+          fi
+
+          if [ -n "$MONGO_ROOT_PASSWORD" ] && [ -n "$MONGO_REPLICA_KEY" ]; then
+            kubectl create secret generic mongodb -n mongodb \
+              --from-literal=mongodb-root-password="$MONGO_ROOT_PASSWORD" \
+              --from-literal=mongodb-replica-set-key="$MONGO_REPLICA_KEY" --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          echo "Configuring domain and Let's Encrypt certificates..."
+          if [ -n "$CUSTOM_DOMAIN" ]; then
+            sed "s/argocd.yourdomain.com/argocd.${CUSTOM_DOMAIN}/g" argocd/certificate.yaml | kubectl apply -f -
+          fi
+
+          if [ -n "$ACME_EMAIL" ]; then
+            sed "s/your-email@yourdomain.com/${ACME_EMAIL}/g" cert-manager/cluster-issuers.yaml | kubectl apply -f -
+          fi
+
+          echo "Bootstrapping Argo CD Root Application..."
+          kubectl apply -f argocd/bootstrap/root-app.yaml
+
+          if [ -n "$CUSTOM_DOMAIN" ]; then
+            kubectl -n argocd patch cm argocd-cm --type merge \
+              -p "{\"data\": {\"url\": \"https://argocd.${CUSTOM_DOMAIN}\"}}" 2>/dev/null || true
+          fi
+
+          echo "Deployment and bootstrap sequence finished successfully!"

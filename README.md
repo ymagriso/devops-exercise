@@ -1,8 +1,8 @@
-# High Availability RKE2 Cluster on Google Cloud (GitOps & Free Trial Setup)
+# High Availability RKE2 Cluster on Google Cloud (GitOps, OpenTofu & Free Trial Setup)
 
-This repository contains the configuration, GitOps manifests, and step-by-step documentation for deploying a highly available, 3-node **RKE2 (Kubernetes)** cluster on **Google Cloud Platform (GCP)**.
+This repository contains the configuration, GitOps manifests, OpenTofu infrastructure-as-code declarations, and step-by-step documentation for deploying a highly available, 3-node **RKE2 (Kubernetes)** cluster on **Google Cloud Platform (GCP)**.
 
-The architecture is optimized to run within the **$300 GCP Free Trial** by provisioning private VMs (`--network-interface=no-address`), using **Identity-Aware Proxy (IAP)** for administrative access, **Cloud NAT** for outbound internet, **Cilium** (eBPF) as the CNI, **`cert-manager`** (Let's Encrypt DNS-01) for automated HTTPS certificates, and **self-managed Argo CD** exposed via **Cloudflare Tunnel (`cloudflared`)** with **Google OIDC** authentication.
+The architecture is optimized to run within the **$300 GCP Free Trial** by provisioning private VMs (`--network-interface=no-address`) in a dedicated **Custom VPC**, using **Identity-Aware Proxy (IAP)** for administrative access, **Cloud NAT** for outbound internet, **Cilium** (eBPF) as the CNI, **`cert-manager`** (Let's Encrypt DNS-01) for automated HTTPS certificates, and **self-managed Argo CD** exposed via **Cloudflare Tunnel (`cloudflared`)** with **Google OIDC** authentication.
 
 ---
 
@@ -12,7 +12,8 @@ The architecture is optimized to run within the **$300 GCP Free Trial** by provi
 flowchart LR
     Admin["Admin (gcloud / kubectl)"] -->|"IAP Tunnel (:22 / :6443)"| RKE2
     User["User (Browser / SSO)"] -->|"HTTPS (Google OIDC)"| CF["Cloudflare Edge"]
-    subgraph GCP["GCP Private VPC (me-west1)"]
+    CI["GitHub Actions (OpenTofu)"] -->|"WIF (Keyless OIDC)"| GCP
+    subgraph GCP["GCP Custom VPC (me-west1, 10.10.0.0/24)"]
         NAT["Cloud NAT"]
         subgraph RKE2["3-Node HA RKE2 Cluster (Cilium eBPF CNI)"]
             CFD["cloudflared (2 replicas)"]
@@ -37,11 +38,11 @@ flowchart LR
 | # | Guide | Description |
 | :--- | :--- | :--- |
 | **1** | [**Architecture & Regional Cost Comparison**](docs/01-architecture-and-costs.md) | Why **RKE2** and **Cilium CNI** were chosen, **Single vs. Multiple Namespace** strategy (pros/cons & recommendations), GCP "Always Free" vs. $300 Free Trial credits, and regional cost/latency comparison (`me-west1` vs. US/EU). |
-| **2** | [**GCP Infrastructure & RKE2 Cluster Setup**](docs/02-gcp-rke2-cluster-setup.md) | Provisioning the 3 private Ubuntu 24.04 VMs, IAP firewall rules, Cloud NAT, bootstrapping the HA RKE2 + Cilium cluster, and local `kubectl` access. |
+| **2** | [**GCP Infrastructure & RKE2 Cluster Setup**](docs/02-gcp-rke2-cluster-setup.md) | Automated provisioning with **OpenTofu** & **GitHub Actions** (Dedicated Custom VPC, Cloud NAT, IAP firewalls, fixed node IPs, and automated RKE2 + Cilium bootstrap) alongside manual `gcloud` walkthrough. |
 | **3** | [**`cert-manager` & Let's Encrypt (HTTPS)**](docs/03-cert-manager-letsencrypt.md) | Installing `cert-manager` via Helm and configuring `letsencrypt-staging` and `letsencrypt-prod` `ClusterIssuer` resources using Cloudflare DNS-01. |
 | **4** | [**Argo CD GitOps, Cloudflare Tunnel & Google OIDC**](docs/04-argocd-cloudflare-oidc.md) | Deploying Argo CD, issuing its Let's Encrypt certificate, exposing it via Cloudflare Tunnel (`cloudflared`), bootstrapping the Root App-of-Apps, and enabling Google OIDC login. |
 | **5** | [**MongoDB ReplicaSet (`8.0.13`) & Prometheus Metrics**](docs/05-mongodb-replicaset-and-metrics.md) | Deploying a 3-node Bitnami MongoDB `8.0.13` ReplicaSet via Argo CD with explicit resource limits, Prometheus metrics exporter (`:9216`), and external access via Cloudflare Tunnel (`:27017`). |
-| **6** | [**Cluster Operations, Renovate & Cost Management**](docs/06-operations-and-cleanup.md) | Automated Helm & Docker updates with **Mend Renovate** (with 3-day/7-day cooldown), stopping/starting cluster VMs to conserve credits, and full teardown. |
+| **6** | [**Cluster Operations, Renovate & Cost Management**](docs/06-operations-and-cleanup.md) | Automated Helm, Docker & OpenTofu updates with **Mend Renovate** (with 3-day/7-day cooldown), stopping/starting cluster VMs to conserve credits, and automated single-click teardown. |
 
 ---
 
@@ -50,7 +51,21 @@ flowchart LR
 ```text
 devops-exercise/
 ├── README.md                                           # Overview, architecture & documentation index
-├── renovate.json                                       # Mend Renovate configuration (Helm, K8s & cooldown rules)
+├── renovate.json                                       # Mend Renovate configuration (Helm, K8s, Docker & OpenTofu rules)
+├── .github/
+│   └── workflows/
+│       ├── tofu-apply.yml                              # OpenTofu plan/apply & zero-touch cluster bootstrap
+│       └── tofu-destroy.yml                            # OpenTofu safe teardown (requires "DESTROY" input)
+├── tofu/                                               # Declarative GCP Infrastructure as Code
+│   ├── versions.tf                                     # OpenTofu & Google/Random provider constraints
+│   ├── providers.tf                                    # Provider configuration
+│   ├── variables.tf                                    # Parameterized GCP variables
+│   ├── terraform.tfvars.example                        # Example variables file
+│   ├── vpc.tf                                          # Custom VPC, subnet, Cloud Router & Cloud NAT
+│   ├── firewall.tf                                     # IAP ingress & intra-cluster firewall rules
+│   ├── compute.tf                                      # Dedicated Service Account & 3x private VMs
+│   ├── startup.sh.tftpl                                # Unified RKE2 + Cilium automated bootstrap script
+│   └── outputs.tf                                      # Node IPs, helper IAP and kubeconfig commands
 ├── docs/                                               # Modular step-by-step guides
 │   ├── 01-architecture-and-costs.md
 │   ├── 02-gcp-rke2-cluster-setup.md
