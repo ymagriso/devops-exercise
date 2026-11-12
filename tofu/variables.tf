@@ -52,7 +52,8 @@ variable "boot_disk_image" {
 }
 
 variable "rke2_version" {
-  description = "RKE2 version string to install (leave empty for latest stable)."
+  description = "RKE2 version string to install."
   type        = string
-  default     = ""
+  # renovate: datasource=github-releases depName=rancher/rke2
+  default = "v1.36.6+rke2r1"
 }

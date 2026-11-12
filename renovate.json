@@ -27,7 +27,33 @@
       "/^tofu/\\.terraform\\.lock\\.hcl$/"
     ]
   },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Manage RKE2 version in OpenTofu configuration",
+      "managerFilePatterns": [
+        "/^tofu/variables\\.tf$/"
+      ],
+      "matchStrings": [
+        "(?:#\\s*renovate:\\s*datasource=(?<datasource>[^\\s]+)\\s+depName=(?<depName>[^\\s]+)\\n\\s*)?default\\s*=\\s*\"(?<currentValue>v\\d+\\.\\d+\\.\\d+\\+rke2r\\d+)\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "rancher/rke2"
+    }
+  ],
   "packageRules": [
+    {
+      "description": "Custom versioning and labels for RKE2 releases",
+      "matchPackageNames": [
+        "rancher/rke2"
+      ],
+      "versioning": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?:-?(?<prerelease>.*))?\\+rke2r(?<build>\\d+)$",
+      "addLabels": [
+        "rke2",
+        "opentofu",
+        "dependencies"
+      ]
+    },
     {
       "description": "Disable major chart upgrades for bitnamicharts/mongodb to stay aligned with MongoDB 8.0.13 (chart 16.x)",
       "matchPackageNames": [
