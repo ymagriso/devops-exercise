@@ -55,5 +55,5 @@ variable "rke2_version" {
   description = "RKE2 version string to install."
   type        = string
   # renovate: datasource=github-releases depName=rancher/rke2
-  default = "v1.37.2+rke2r1"
+  default = "v1.36.6+rke2r1"
 }
