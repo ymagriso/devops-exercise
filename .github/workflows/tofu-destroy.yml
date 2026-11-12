@@ -52,8 +52,11 @@ jobs:
 
       - name: OpenTofu Init
         run: |
+          PROJECT_ID=$(gcloud config get-value project)
           cd tofu
-          tofu init
+          tofu init \
+            -backend-config="bucket=${PROJECT_ID}-tofu-state" \
+            -backend-config="prefix=rke2-cluster"
 
       - name: OpenTofu Destroy
         run: |

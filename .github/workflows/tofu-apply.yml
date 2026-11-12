@@ -60,9 +60,20 @@ jobs:
 
       - name: OpenTofu Init & Format / Validate
         run: |
+          PROJECT_ID=$(gcloud config get-value project)
+
+          # Ensure state GCS bucket exists
+          if ! gcloud storage buckets describe "gs://${PROJECT_ID}-tofu-state" >/dev/null 2>&1; then
+            echo "Creating remote state bucket gs://${PROJECT_ID}-tofu-state..."
+            gcloud storage buckets create "gs://${PROJECT_ID}-tofu-state" --location=me-west1 --uniform-bucket-level-access
+            gcloud storage buckets update "gs://${PROJECT_ID}-tofu-state" --versioning
+          fi
+
           cd tofu
           tofu fmt -check
-          tofu init
+          tofu init \
+            -backend-config="bucket=${PROJECT_ID}-tofu-state" \
+            -backend-config="prefix=rke2-cluster"
           tofu validate
 
       - name: OpenTofu Plan
