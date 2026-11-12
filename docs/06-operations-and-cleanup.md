@@ -7,6 +7,11 @@
 - [Automated Dependency Updates with Mend Renovate](#automated-dependency-updates-with-mend-renovate)
   - [Tracked Managers & Files](#tracked-managers--files)
   - [Cooldown (`minimumReleaseAge`) & Rate-Limiting Strategy](#cooldown-minimumreleaseage--rate-limiting-strategy)
+- [Automated In-Place RKE2 Upgrades (System Upgrade Controller)](#automated-in-place-rke2-upgrades-system-upgrade-controller)
+  - [Architecture & Rolling Upgrade Workflow](#architecture--rolling-upgrade-workflow)
+  - [Renovate Coordination & Single-Minor Upgrade Guard](#renovate-coordination--single-minor-upgrade-guard)
+  - [OpenTofu In-Place VM Metadata & Safety Guardrail](#opentofu-in-place-vm-metadata--safety-guardrail)
+- [TLS Certificate Persistence & ACME Rate-Limit Protection](#tls-certificate-persistence--acme-rate-limit-protection)
 - [Stop the Instances (Cost Conservation)](#stop-the-instances-cost-conservation)
 - [Start the Instances](#start-the-instances)
 - [Check Instance Status](#check-instance-status)
@@ -19,13 +24,15 @@
 
 ## Automated Dependency Updates with Mend Renovate
 
-This repository uses the [**Mend Renovate**](https://developer.mend.io) GitHub App configured via [`renovate.json`](../renovate.json) to automatically detect and open Pull Requests for new **Helm chart versions**, **Docker container image tags**, and **OpenTofu provider versions**. Because Argo CD is configured with automated sync (`automated: true`), merging a Renovate PR into `main` automatically rolls out the upgrade to the cluster.
+This repository uses the [**Mend Renovate**](https://developer.mend.io) GitHub App configured via [`renovate.json`](../renovate.json) to automatically detect and open Pull Requests for new **RKE2 Kubernetes versions**, **Helm chart versions**, **Docker container image tags**, and **OpenTofu provider versions**. Because Argo CD is configured with automated sync (`automated: true`), merging a Renovate PR into `main` automatically rolls out the upgrade to the cluster.
 
 ### Tracked Managers & Files
 
 | Renovate Manager | Pattern (`managerFilePatterns`) | Tracked Dependencies |
 | :--- | :--- | :--- |
-| **`terraform`** | `/^tofu/.*\.tf$/`, `tofu/.terraform.lock.hcl` | • OpenTofu required version<br>• `hashicorp/google` provider<br>• `hashicorp/random` provider |
+| **`terraform`** | `/^tofu/.*\.tf$/` | • OpenTofu required version<br>• `hashicorp/google` provider<br>• `hashicorp/random` provider (routed to `registry.opentofu.org`) |
+| **`custom.regex` (RKE2)** | `/^tofu/variables\.tf$/`<br>`/^argocd/apps/workloads/rke2-upgrade-plans/.+\.ya?ml$/` | • `rancher/rke2` GitHub releases (synchronized across both OpenTofu variable defaults and runtime SUC `Plan` CRDs) |
+| **`custom.regex` (SUC)** | `/^argocd/apps/workloads/system-upgrade-controller/kustomization\.ya?ml$/` | • `rancher/system-upgrade-controller` GitHub releases |
 | **`argocd`** | `/^argocd/(apps\|bootstrap)/[^/]+\.ya?ml$/` | • `argo-cd` Helm chart in [`argocd/apps/argocd.yaml`](../argocd/apps/argocd.yaml)<br>• `cert-manager` Helm chart in [`argocd/apps/cert-manager.yaml`](../argocd/apps/cert-manager.yaml)<br>• `mongodb` OCI Helm chart in [`argocd/apps/mongodb.yaml`](../argocd/apps/mongodb.yaml) |
 | **`kubernetes`** | `/^argocd/apps/workloads/.+\.ya?ml$/` | • `cloudflare/cloudflared` image in [`argocd/apps/workloads/cloudflared/deployment.yaml`](../argocd/apps/workloads/cloudflared/deployment.yaml) |
 | **`helm-values`** | `/(^\|/)values\.ya?ml$/` | • `bitnamilegacy/mongodb` & `bitnamilegacy/mongodb-exporter` images in [`mongodb/values.yaml`](../mongodb/values.yaml) |
@@ -34,10 +41,89 @@ This repository uses the [**Mend Renovate**](https://developer.mend.io) GitHub A
 ### Cooldown (`minimumReleaseAge`) & Rate-Limiting Strategy
 
 To protect the GitOps cluster against supply-chain compromises and unstable "Day-0" upstream releases:
-* **3-Day Default Cooldown (`"minimumReleaseAge": "3 days"`):** Patch and minor Helm chart or Docker image updates must soak upstream for at least 3 days before Renovate opens a PR.
+* **3-Day Default Cooldown (`"minimumReleaseAge": "3 days"`):** Patch and minor Helm chart, RKE2, or Docker image updates must soak upstream for at least 3 days before Renovate opens a PR.
 * **7-Day Major Release Cooldown (`matchUpdateTypes: ["major"]`):** Major version upgrades require a 7-day cooldown window to allow early upstream hotfixes (`.1` / `.2`) to settle.
+* **One Minor Version at a Time for Kubernetes (`separateMultipleMinor: true`):** Kubernetes only supports sequential minor version upgrades ($1.35 \rightarrow 1.36 \rightarrow 1.37$). Renovate is configured with `separateMultipleMinor: true` for `rancher/rke2` to ensure a dedicated PR is opened per minor series rather than skipping minor releases.
 * **Pinned Major Series for MongoDB (`registry-1.docker.io/bitnamicharts/mongodb`):** Major chart updates (`17.x+`, which target MongoDB `8.2`/`9.0` and `:latest` tags) are disabled (`enabled: false`) so the chart remains aligned with the pinned MongoDB `8.0.13` (`16.x`) release.
-* **PR Rate Limits (`prHourlyLimit: 2`, `prConcurrentLimit: 5`):** Prevents PR spam while automatically tagging PRs with `helm`, `docker`, `opentofu`, and `dependencies` labels.
+* **PR Rate Limits (`prHourlyLimit: 2`, `prConcurrentLimit: 5`):** Prevents PR spam while automatically tagging PRs with `rke2`, `opentofu`, `helm`, `docker`, and `dependencies` labels.
+
+---
+
+## Automated In-Place RKE2 Upgrades (System Upgrade Controller)
+
+In standard GCP VM deployments, updating the RKE2 version in a VM startup script only applies when a machine boots. To provide **true zero-downtime, automated in-place upgrades** of running Kubernetes nodes, this repository deploys Rancher's [**System Upgrade Controller (SUC)**](https://github.com/rancher/system-upgrade-controller).
+
+### Architecture & Rolling Upgrade Workflow
+
+The System Upgrade Controller is deployed into the `system-upgrade` namespace via Argo CD using pinned upstream Kustomize manifests ([`argocd/apps/workloads/system-upgrade-controller/`](../argocd/apps/workloads/system-upgrade-controller/)):
+
+```mermaid
+flowchart TD
+    PR["Renovate PR Merged (Bump RKE2 Version)"] --> Argo["Argo CD Syncs Plan CRD"]
+    Argo --> SUC["System Upgrade Controller"]
+    subgraph SUC["Rolling In-Place Upgrade (concurrency: 1)"]
+        direction TB
+        Step1["1. Select target node (e.g., rke2-node-3)"] --> Step2["2. Cordon & Drain node"]
+        Step2 --> Step3["3. Schedule privileged Job mounting /host"]
+        Step3 --> Step4["4. rancher/rke2-upgrade container runs"]
+        Step4 --> Step5["5. Replaces /host binaries & restarts rke2-server"]
+        Step5 --> Step6["6. Uncordon node & verify Ready status"]
+        Step6 --> Step7["7. Proceed to next node (rke2-node-2, then rke2-node-1)"]
+    end
+    Step7 --> Complete["All 3 Nodes Upgraded to Target Version"]
+```
+
+#### Defined Upgrade Plans ([`argocd/apps/workloads/rke2-upgrade-plans/plans.yaml`](../argocd/apps/workloads/rke2-upgrade-plans/plans.yaml)):
+1. **`rke2-server` Plan:**
+   - Targets control-plane server nodes (`node-role.kubernetes.io/control-plane: "true"`).
+   - Set to `concurrency: 1` so only one server node is cordoned and upgraded at any time, maintaining etcd quorum and control-plane availability.
+   - Executes the container image `rancher/rke2-upgrade` with host root mounted at `/host`.
+2. **`rke2-agent` Plan:**
+   - Targets worker/agent nodes (currently a no-op until worker nodes are added).
+   - Uses `prepare` to ensure worker nodes only upgrade after the `rke2-server` plan has fully completed.
+
+### Renovate Coordination & Single-Minor Upgrade Guard
+
+Because the RKE2 version is declared in two places:
+1. [`tofu/variables.tf`](../tofu/variables.tf) (used by OpenTofu when provisioning **new** VMs from scratch)
+2. [`argocd/apps/workloads/rke2-upgrade-plans/plans.yaml`](../argocd/apps/workloads/rke2-upgrade-plans/plans.yaml) (used by SUC to upgrade **existing running** nodes)
+
+[`renovate.json`](../renovate.json) defines custom regex managers with identical package names (`depName: "rancher/rke2"`). Renovate automatically bundles both changes into a **single Pull Request**. Merging the PR updates both the baseline bootstrap configuration and triggers Argo CD to execute the rolling upgrade immediately.
+
+### OpenTofu In-Place VM Metadata & Safety Guardrail
+
+In OpenTofu / Terraform Google provider:
+* **The Risk of `metadata_startup_script`:** Setting `metadata_startup_script` forces VM replacement (`ForceNew`). Changing the version string would destroy and recreate all 3 VMs simultaneously, wiping the boot disks and etcd quorum.
+* **The In-Place Fix:** In [`tofu/compute.tf`](../tofu/compute.tf), startup scripts are configured under the generic `metadata` map:
+  ```hcl
+  metadata = {
+    startup-script = templatefile("${path.module}/startup.sh.tftpl", { ... })
+  }
+  ```
+  In GCP, changing `metadata` is strictly an in-place update (`0 destroyed`).
+* **CI Replacement Guardrail:** In [`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml), every pipeline run performs `tofu plan -out=tfplan` and inspects the plan JSON:
+  ```bash
+  REPLACED=$(tofu show -json tfplan | jq -r '.resource_changes[]
+    | select(.type == "google_compute_instance")
+    | select(.change.actions | index("delete"))
+    | "\(.address): \(.change.actions | join("/"))"')
+  if [ -n "$REPLACED" ]; then
+    # Refuses execution and fails the workflow unless explicitly authorized
+  fi
+  ```
+  Any accidental attempt to replace or delete cluster VM instances is caught and blocked before `tofu apply` can execute. To explicitly allow VM replacements, the workflow must be run manually via `workflow_dispatch` with `allow_node_replacement: true`.
+
+---
+
+## TLS Certificate Persistence & ACME Rate-Limit Protection
+
+To support frequent cluster destroy and recreate cycles without running into Let's Encrypt's production rate limits (**5 duplicate certificates per exact domain name per week**):
+1. **Multi-Identifier SAN:** [`argocd/certificate.yaml`](../argocd/certificate.yaml) specifies both `argocd.<domain>` and `*.argocd.<domain>`.
+2. **Encrypted State Bucket Caching:** During cluster bootstrapping in [`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml), the workflow checks for a previously issued TLS Secret in Google Cloud Storage:
+   ```bash
+   CERT_CACHE_URI="gs://${PROJECT_ID}-tofu-state/certs/argocd-server-tls.json"
+   ```
+   If a certificate was previously generated, it is restored into Kubernetes before applying `Certificate` manifests. After issuance, the valid certificate secret is exported and cached back to GCS, ensuring zero downtime and zero wasted ACME quota on rebuilds.
 
 ---
 

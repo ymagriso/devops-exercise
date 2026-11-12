@@ -19,6 +19,7 @@ flowchart LR
             CFD["cloudflared (2 replicas)"]
             Argo["Argo CD (Self-Managed)"]
             CM["cert-manager (Let's Encrypt DNS-01)"]
+            SUC["System Upgrade Controller (Rolling Upgrades)"]
             Mongo["MongoDB 8.0.13 (3-Node ReplicaSet + Metrics)"]
         end
     end
@@ -42,7 +43,7 @@ flowchart LR
 | **3** | [**`cert-manager` & Let's Encrypt (HTTPS)**](docs/03-cert-manager-letsencrypt.md) | Installing `cert-manager` via Helm and configuring `letsencrypt-staging` and `letsencrypt-prod` `ClusterIssuer` resources using Cloudflare DNS-01. |
 | **4** | [**Argo CD GitOps, Cloudflare Tunnel & Google OIDC**](docs/04-argocd-cloudflare-oidc.md) | Deploying Argo CD, issuing its Let's Encrypt certificate, exposing it via Cloudflare Tunnel (`cloudflared`), bootstrapping the Root App-of-Apps, and enabling Google OIDC login. |
 | **5** | [**MongoDB ReplicaSet (`8.0.13`) & Prometheus Metrics**](docs/05-mongodb-replicaset-and-metrics.md) | Deploying a 3-node Bitnami MongoDB `8.0.13` ReplicaSet via Argo CD with explicit resource limits, Prometheus metrics exporter (`:9216`), and external access via Cloudflare Tunnel (`:27017`). |
-| **6** | [**Cluster Operations, Renovate & Cost Management**](docs/06-operations-and-cleanup.md) | Automated Helm, Docker & OpenTofu updates with **Mend Renovate** (with 3-day/7-day cooldown), stopping/starting cluster VMs to conserve credits, and automated single-click teardown. |
+| **6** | [**Cluster Operations, Renovate & Cost Management**](docs/06-operations-and-cleanup.md) | Automated Helm, Docker & OpenTofu updates with **Mend Renovate** (with 3-day/7-day cooldown), zero-downtime rolling RKE2 upgrades via **System Upgrade Controller (SUC)**, stopping/starting cluster VMs to conserve credits, and automated single-click teardown. |
 
 ---
 
@@ -88,8 +89,14 @@ devops-exercise/
         ├── cert-manager.yaml                           # cert-manager GitOps Application
         ├── cloudflared.yaml                            # Cloudflare Tunnel GitOps Application
         ├── mongodb.yaml                                # Bitnami MongoDB ReplicaSet GitOps Application
+        ├── system-upgrade-controller.yaml              # Rancher System Upgrade Controller Application
+        ├── rke2-upgrade-plans.yaml                     # RKE2 automated upgrade Plans Application
         └── workloads/
-            └── cloudflared/
-                ├── namespace.yaml
-                └── deployment.yaml
+            ├── cloudflared/
+            │   ├── namespace.yaml
+            │   └── deployment.yaml
+            ├── system-upgrade-controller/
+            │   └── kustomization.yaml                  # Upstream pinned SUC manifests & CRDs
+            └── rke2-upgrade-plans/
+                └── plans.yaml                          # Server & Agent rolling upgrade Plan definitions
 ```
