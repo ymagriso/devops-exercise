@@ -59,6 +59,13 @@ Wait ~1–2 minutes for the DNS-01 challenge to complete and verify the certific
 kubectl get certificate -n argocd
 ```
 
+Restart `argocd-server` so it loads the newly issued TLS certificate from `argocd-server-tls`:
+
+```bash
+kubectl rollout restart deployment argocd-server -n argocd
+kubectl rollout status deployment argocd-server -n argocd
+```
+
 ## Step 3: Configure the Cloudflare Tunnel Secret and Public Hostname
 
 1. In the [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/) (*Networks → Tunnels*), create a new **Cloudflared** tunnel (e.g., `rke2-cluster`) and copy the **Tunnel Token**.
