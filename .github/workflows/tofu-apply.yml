@@ -117,7 +117,7 @@ jobs:
           export KUBECONFIG=$(pwd)/rke2-kubeconfig.yaml
           kubectl get nodes -o wide
 
-      - name: Inject Kubernetes Secrets & Configure Domain
+      - name: Bootstrap Core Services, Secrets & Domain
         if: env.ACTION == 'apply' && github.event_name != 'pull_request'
         env:
           KUBECONFIG: ${{ github.workspace }}/rke2-kubeconfig.yaml
@@ -158,21 +158,41 @@ jobs:
               --from-literal=mongodb-replica-set-key="$MONGO_REPLICA_KEY" --dry-run=client -o yaml | kubectl apply -f -
           fi
 
-          echo "Configuring domain and Let's Encrypt certificates..."
-          if [ -n "$CUSTOM_DOMAIN" ]; then
-            sed "s/argocd.yourdomain.com/argocd.${CUSTOM_DOMAIN}/g" argocd/certificate.yaml | kubectl apply -f -
-          fi
+          # Extract chart versions dynamically from Argo CD manifests (Single Source of Truth)
+          CERT_MANAGER_VERSION=$(python3 -c "import yaml; print(yaml.safe_load(open('argocd/apps/cert-manager.yaml'))['spec']['sources'][0]['targetRevision'])" 2>/dev/null || grep 'targetRevision:' argocd/apps/cert-manager.yaml | head -n1 | awk '{print $2}')
+          ARGOCD_VERSION=$(python3 -c "import yaml; print(yaml.safe_load(open('argocd/apps/argocd.yaml'))['spec']['sources'][0]['targetRevision'])" 2>/dev/null || grep 'targetRevision:' argocd/apps/argocd.yaml | head -n1 | awk '{print $2}')
+
+          echo "Installing cert-manager (version: ${CERT_MANAGER_VERSION}) via Helm..."
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo update
+          helm upgrade --install cert-manager jetstack/cert-manager \
+            --namespace cert-manager \
+            --version "${CERT_MANAGER_VERSION}" \
+            --values cert-manager/values.yaml \
+            --wait
 
           if [ -n "$ACME_EMAIL" ]; then
+            echo "Applying Let's Encrypt ClusterIssuers..."
             sed "s/your-email@yourdomain.com/${ACME_EMAIL}/g" cert-manager/cluster-issuers.yaml | kubectl apply -f -
+          fi
+
+          echo "Installing Argo CD (version: ${ARGOCD_VERSION}) via Helm..."
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+          helm upgrade --install argocd argo/argo-cd \
+            --namespace argocd \
+            --version "${ARGOCD_VERSION}" \
+            --values argocd/values.yaml \
+            --wait
+
+          if [ -n "$CUSTOM_DOMAIN" ]; then
+            echo "Configuring domain and Let's Encrypt certificates..."
+            sed "s/argocd.yourdomain.com/argocd.${CUSTOM_DOMAIN}/g" argocd/certificate.yaml | kubectl apply -f -
+            kubectl -n argocd patch cm argocd-cm --type merge \
+              -p "{\"data\": {\"url\": \"https://argocd.${CUSTOM_DOMAIN}\"}}" 2>/dev/null || true
           fi
 
           echo "Bootstrapping Argo CD Root Application..."
           kubectl apply -f argocd/bootstrap/root-app.yaml
-
-          if [ -n "$CUSTOM_DOMAIN" ]; then
-            kubectl -n argocd patch cm argocd-cm --type merge \
-              -p "{\"data\": {\"url\": \"https://argocd.${CUSTOM_DOMAIN}\"}}" 2>/dev/null || true
-          fi
 
           echo "Deployment and bootstrap sequence finished successfully!"
