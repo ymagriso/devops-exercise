@@ -37,6 +37,19 @@ resource "google_compute_disk" "rke2_var_disk" {
   }
 }
 
+# Dedicated 50GB shared disk attached to rke2-node-1 and exported via NFS across all nodes
+resource "google_compute_disk" "rke2_shared_disk" {
+  name = "rke2-shared-disk"
+  type = "pd-standard"
+  zone = var.zone
+  size = var.shared_disk_size
+  labels = {
+    managed-by = "opentofu"
+    cluster    = "rke2"
+    mount      = "shared"
+  }
+}
+
 # 3-Node High Availability RKE2 Cluster Instances
 resource "google_compute_instance" "rke2_node" {
   count        = var.node_count
@@ -64,6 +77,14 @@ resource "google_compute_instance" "rke2_node" {
     device_name = "var-disk"
   }
 
+  dynamic "attached_disk" {
+    for_each = count.index == 0 ? [google_compute_disk.rke2_shared_disk.id] : []
+    content {
+      source      = attached_disk.value
+      device_name = "shared-disk"
+    }
+  }
+
   network_interface {
     network    = google_compute_network.rke2_vpc.id
     subnetwork = google_compute_subnetwork.rke2_subnet.id
@@ -88,6 +109,7 @@ resource "google_compute_instance" "rke2_node" {
       node_name    = "rke2-node-${count.index + 1}"
       node_ip      = cidrhost(var.subnet_cidr, 11 + count.index)
       init_node_ip = cidrhost(var.subnet_cidr, 11)
+      subnet_cidr  = var.subnet_cidr
       token        = random_password.rke2_token.result
       rke2_version = var.rke2_version
     })

@@ -21,6 +21,7 @@ flowchart LR
             CM["cert-manager (Let's Encrypt DNS-01)"]
             SUC["System Upgrade Controller (Rolling Upgrades)"]
             Mongo["MongoDB 8.0.13 (3-Node ReplicaSet + Metrics)"]
+            Registry["Docker Registry (50 GB Shared /shared Disk)"]
         end
     end
     GH["GitHub (ymagriso/devops-exercise)"]
@@ -82,6 +83,7 @@ devops-exercise/
 └── argocd/
     ├── values.yaml                                     # Helm values for argo/argo-cd (Google OIDC enabled)
     ├── certificate.yaml                                # Let's Encrypt Certificate for argocd-server-tls
+    ├── certificate-registry.yaml                       # Let's Encrypt Certificate for docker-registry-tls
     ├── bootstrap/
     │   └── root-app.yaml                               # Root App-of-Apps watching argocd/apps/
     └── apps/
@@ -91,10 +93,15 @@ devops-exercise/
         ├── mongodb.yaml                                # Bitnami MongoDB ReplicaSet GitOps Application
         ├── system-upgrade-controller.yaml              # Rancher System Upgrade Controller Application
         ├── rke2-upgrade-plans.yaml                     # RKE2 automated upgrade Plans Application
+        ├── docker-registry.yaml                        # Docker Registry GitOps Application
         └── workloads/
             ├── cloudflared/
             │   ├── namespace.yaml
             │   └── deployment.yaml
+            ├── docker-registry/
+            │   ├── namespace.yaml
+            │   ├── service.yaml                        # Exposes port 443 (HTTPS) & 5000
+            │   └── deployment.yaml                     # Native TLS (Let's Encrypt), htpasswd auth, storage on /shared/docker-registry
             ├── system-upgrade-controller/
             │   └── kustomization.yaml                  # Upstream pinned SUC manifests & CRDs
             └── rke2-upgrade-plans/
