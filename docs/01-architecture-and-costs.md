@@ -77,9 +77,9 @@ Kubernetes namespaces provide a logical boundary for organizing cluster resource
 ### Multiple Namespaces: Pros & Cons
 
 **Pros:**
-* **Strong Security & Secret Isolation:** Kubernetes `Secret` objects cannot be mounted across namespaces. Sensitive credentials—such as `cloudflare-api-token` in `cert-manager`, `argocd-google-oidc` in `argocd`, and `tunnel-credentials` in `cloudflare`—are completely invisible to application workloads.
-* **Zero-Trust Network Segmentation with Cilium:** With Cilium as the CNI, you can apply default-deny ingress/egress policies per namespace and explicitly allow only required cross-namespace paths (for example, allowing `cloudflare` (`cloudflared`) to reach `argocd-server.argocd.svc.cluster.local:443` and nothing else).
-* **Blast-Radius & Lifecycle Containment:** Upgrading, rolling back, or deleting one component's namespace (`kubectl delete ns cloudflare`) cannot accidentally delete resources in `argocd` or `cert-manager`.
+* **Strong Security & Secret Isolation:** Kubernetes `Secret` objects cannot be mounted across namespaces. Sensitive credentials—such as `cloudflare-api-token` in `cert-manager`, `argocd-google-oidc` in `argocd`, and `cloudflared-token` in `cloudflared`—are completely invisible to application workloads.
+* **Zero-Trust Network Segmentation with Cilium:** With Cilium as the CNI, you can apply default-deny ingress/egress policies per namespace and explicitly allow only required cross-namespace paths (for example, allowing `cloudflared` to reach `argocd-server.argocd.svc.cluster.local:443` and nothing else).
+* **Blast-Radius & Lifecycle Containment:** Upgrading, rolling back, or deleting one component's namespace (`kubectl delete ns cloudflared`) cannot accidentally delete resources in `argocd` or `cert-manager`.
 * **Granular RBAC & Multi-Tenancy:** In Argo CD and Kubernetes RBAC, you can grant developers full access to an application namespace while keeping infrastructure namespaces (`kube-system`, `cert-manager`, `argocd`) read-only or restricted to platform admins.
 * **Dedicated Resource Governance:** On memory-constrained nodes (such as 3 × 8 GB RAM VMs), per-namespace `ResourceQuota` and `LimitRange` policies ensure development workloads cannot starve stateful databases or control-plane components.
 
@@ -95,7 +95,7 @@ In this repository, each platform component runs in its own dedicated namespace:
 * **`kube-system`** — RKE2 core components and Cilium CNI
 * **`cert-manager`** — TLS certificate controller (`cloudflare-api-token` secret stays isolated here)
 * **`argocd`** — GitOps control plane (`argocd-google-oidc` and `argocd-server-tls` stay isolated here)
-* **`cloudflare`** — Edge connector (`cloudflared` pods and `tunnel-credentials` secret stay isolated here)
+* **`cloudflared`** — Edge connector (`cloudflared` pods and `cloudflared-token` secret stay isolated here)
 
 > **Why this is recommended:** Platform tools hold high-privilege credentials (DNS API tokens, OIDC client secrets, tunnel tokens). Isolating each into its own namespace ensures that even if `cloudflared` (which handles external edge traffic) were compromised, it cannot read `cert-manager`'s Cloudflare DNS API token or Argo CD's OIDC secrets. Furthermore, using a `ClusterIssuer` (`letsencrypt-prod`) allows `cert-manager` to issue `Certificate` secrets into any target namespace without sharing its own namespace.
 
