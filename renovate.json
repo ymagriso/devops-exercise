@@ -23,8 +23,7 @@
   },
   "terraform": {
     "managerFilePatterns": [
-      "/^tofu/.*\\.tf$/",
-      "/^tofu/\\.terraform\\.lock\\.hcl$/"
+      "/^tofu/.*\\.tf$/"
     ]
   },
   "customManagers": [
