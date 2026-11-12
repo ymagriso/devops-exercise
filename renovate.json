@@ -38,6 +38,30 @@
       ],
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "rancher/rke2"
+    },
+    {
+      "customType": "regex",
+      "description": "Manage RKE2 version in System Upgrade Controller Plans (same depName so it lands in the same PR as tofu/variables.tf)",
+      "managerFilePatterns": [
+        "/^argocd/apps/workloads/rke2-upgrade-plans/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "version:\\s*(?<currentValue>v\\d+\\.\\d+\\.\\d+\\+rke2r\\d+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "rancher/rke2"
+    },
+    {
+      "customType": "regex",
+      "description": "Manage System Upgrade Controller release manifests referenced by Kustomize",
+      "managerFilePatterns": [
+        "/^argocd/apps/workloads/system-upgrade-controller/kustomization\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "https://github\\.com/rancher/system-upgrade-controller/releases/download/(?<currentValue>v[^/]+)/"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "rancher/system-upgrade-controller"
     }
   ],
   "packageRules": [
@@ -57,6 +81,7 @@
         "rancher/rke2"
       ],
       "versioning": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?:-?(?<prerelease>.*))?\\+rke2r(?<build>\\d+)$",
+      "separateMultipleMinor": true,
       "addLabels": [
         "rke2",
         "opentofu",
