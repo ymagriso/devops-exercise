@@ -23,6 +23,20 @@ resource "google_project_iam_member" "rke2_node_metric_writer" {
   member  = "serviceAccount:${google_service_account.rke2_node_sa.email}"
 }
 
+# Dedicated persistent disks for /var on each node
+resource "google_compute_disk" "rke2_var_disk" {
+  count = var.node_count
+  name  = "rke2-node-${count.index + 1}-var"
+  type  = "pd-standard"
+  zone  = var.zone
+  size  = var.var_disk_size
+  labels = {
+    managed-by = "opentofu"
+    cluster    = "rke2"
+    mount      = "var"
+  }
+}
+
 # 3-Node High Availability RKE2 Cluster Instances
 resource "google_compute_instance" "rke2_node" {
   count        = var.node_count
@@ -43,6 +57,11 @@ resource "google_compute_instance" "rke2_node" {
         cluster    = "rke2"
       }
     }
+  }
+
+  attached_disk {
+    source      = google_compute_disk.rke2_var_disk[count.index].id
+    device_name = "var-disk"
   }
 
   network_interface {
