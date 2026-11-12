@@ -17,7 +17,7 @@ metadata:
     rke2-upgrade: server
 spec:
   # renovate: datasource=github-releases depName=rancher/rke2
-  version: v1.36.6+rke2r1
+  version: v1.37.2+rke2r1
   concurrency: 1
   cordon: true
   serviceAccountName: system-upgrade
@@ -50,7 +50,7 @@ metadata:
     rke2-upgrade: agent
 spec:
   # renovate: datasource=github-releases depName=rancher/rke2
-  version: v1.36.6+rke2r1
+  version: v1.37.2+rke2r1
   concurrency: 1
   cordon: true
   serviceAccountName: system-upgrade
