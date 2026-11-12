@@ -21,6 +21,7 @@ flowchart LR
             CM["cert-manager (Let's Encrypt DNS-01)"]
             SUC["System Upgrade Controller (Rolling Upgrades)"]
             Mongo["MongoDB 8.0.13 (3-Node ReplicaSet + Metrics)"]
+            Registry["Docker Registry (50 GB Shared /shared Disk)"]
         end
     end
     GH["GitHub (ymagriso/devops-exercise)"]
@@ -91,10 +92,15 @@ devops-exercise/
         ├── mongodb.yaml                                # Bitnami MongoDB ReplicaSet GitOps Application
         ├── system-upgrade-controller.yaml              # Rancher System Upgrade Controller Application
         ├── rke2-upgrade-plans.yaml                     # RKE2 automated upgrade Plans Application
+        ├── docker-registry.yaml                        # Docker Registry GitOps Application
         └── workloads/
             ├── cloudflared/
             │   ├── namespace.yaml
             │   └── deployment.yaml
+            ├── docker-registry/
+            │   ├── namespace.yaml
+            │   ├── service.yaml
+            │   └── deployment.yaml                     # Storing blobs & manifests on /shared/docker-registry
             ├── system-upgrade-controller/
             │   └── kustomization.yaml                  # Upstream pinned SUC manifests & CRDs
             └── rke2-upgrade-plans/

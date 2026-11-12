@@ -155,11 +155,55 @@ jobs:
           export KUBECONFIG=$(pwd)/rke2-kubeconfig.yaml
           kubectl get nodes -o wide
 
+          echo "Verifying /shared filesystem and NFS mounts across all nodes..."
+          gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a --command='
+            if [ -b "/dev/disk/by-id/google-shared-disk" ]; then
+              if ! findmnt -M /shared >/dev/null 2>&1; then
+                if ! blkid /dev/disk/by-id/google-shared-disk | grep -q "TYPE="; then
+                  sudo mkfs.ext4 -m 0 -F /dev/disk/by-id/google-shared-disk
+                fi
+                sudo mkdir -p /shared
+                UUID=$(sudo blkid -s UUID -o value /dev/disk/by-id/google-shared-disk)
+                if ! grep -q "UUID=$UUID" /etc/fstab; then
+                  echo "UUID=$UUID /shared ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+                fi
+                sudo systemctl daemon-reload && sudo mount /shared
+              fi
+              sudo chmod 777 /shared
+              sudo mkdir -p /shared/docker-registry && sudo chmod 777 /shared/docker-registry
+              sudo apt-get update && sudo apt-get install -y nfs-kernel-server
+              if ! grep -q "/shared " /etc/exports; then
+                echo "/shared 10.10.0.0/24(rw,sync,no_subtree_check,no_root_squash)" | sudo tee -a /etc/exports
+              fi
+              sudo exportfs -ra && sudo systemctl enable --now nfs-server.service
+            fi
+          '
+
+          for n in rke2-node-2 rke2-node-3; do
+            gcloud compute ssh $n --tunnel-through-iap --zone=me-west1-a --command='
+              if ! findmnt -M /shared >/dev/null 2>&1; then
+                sudo apt-get update && sudo apt-get install -y nfs-common
+                sudo mkdir -p /shared
+                if ! grep -q "10.10.0.11:/shared" /etc/fstab; then
+                  echo "10.10.0.11:/shared /shared nfs nfsvers=4.2,rw,_netdev,soft,timeo=100 0 0" | sudo tee -a /etc/fstab
+                fi
+                sudo systemctl daemon-reload && sudo mount /shared
+              fi
+            '
+          done
+
+          echo "Checking /shared mount on all nodes:"
+          for n in rke2-node-1 rke2-node-2 rke2-node-3; do
+            echo "--- $n /shared ---"
+            gcloud compute ssh $n --tunnel-through-iap --zone=me-west1-a --command='df -h /shared' || true
+          done
+
           echo "Creating core namespaces..."
           kubectl create namespace cert-manager --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace cloudflared --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace mongodb --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace docker-registry --dry-run=client -o yaml | kubectl apply -f -
 
           echo "Injecting secrets from GitHub Secrets..."
           if [ -n "$CF_API_TOKEN" ]; then

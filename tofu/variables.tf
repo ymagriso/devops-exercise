@@ -51,6 +51,12 @@ variable "var_disk_size" {
   default     = 50
 }
 
+variable "shared_disk_size" {
+  description = "Dedicated shared persistent disk size in GB (mounted as /shared across all nodes via NFS)."
+  type        = number
+  default     = 50
+}
+
 variable "boot_disk_image" {
   description = "OS boot image for the nodes."
   type        = string

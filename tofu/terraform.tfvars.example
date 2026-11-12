@@ -10,5 +10,6 @@ node_count      = 3
 machine_type    = "e2-standard-2"
 boot_disk_size  = 10
 var_disk_size   = 50
+shared_disk_size = 50
 boot_disk_image = "ubuntu-os-cloud/ubuntu-2404-lts-amd64"
 rke2_version    = "v1.37.2+rke2r1"

@@ -61,6 +61,45 @@ mkdir -p /etc/rancher/rke2
 %{ if is_init_node ~}
 echo "[INIT] Configuring primary RKE2 server node..."
 
+# Configure dedicated /shared disk and NFS server export on primary node
+SHARED_DISK_DEV="/dev/disk/by-id/google-shared-disk"
+for i in {1..30}; do
+  if [ -b "$SHARED_DISK_DEV" ]; then
+    break
+  fi
+  sleep 1
+done
+
+if [ -b "$SHARED_DISK_DEV" ]; then
+  echo "[SHARED] Setting up dedicated /shared disk on $SHARED_DISK_DEV..."
+  if ! blkid "$SHARED_DISK_DEV" | grep -q 'TYPE='; then
+    echo "[SHARED] Formatting $SHARED_DISK_DEV as ext4..."
+    mkfs.ext4 -m 0 -F "$SHARED_DISK_DEV"
+  fi
+
+  mkdir -p /shared
+  if ! findmnt -M /shared | grep -q "$SHARED_DISK_DEV"; then
+    SHARED_UUID=$(blkid -s UUID -o value "$SHARED_DISK_DEV")
+    if ! grep -q "UUID=$SHARED_UUID" /etc/fstab; then
+      echo "UUID=$SHARED_UUID /shared ext4 defaults,nofail 0 2" >> /etc/fstab
+    fi
+    systemctl daemon-reload
+    mount /shared
+  fi
+  chmod 777 /shared
+  mkdir -p /shared/docker-registry
+  chmod 777 /shared/docker-registry
+
+  echo "[SHARED] Installing and configuring nfs-kernel-server..."
+  DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y nfs-kernel-server
+  if ! grep -q "/shared " /etc/exports; then
+    echo "/shared ${subnet_cidr}(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
+  fi
+  exportfs -ra
+  systemctl enable --now nfs-server.service
+  echo "[SHARED] Dedicated /shared disk and NFS server successfully configured!"
+fi
+
 cat <<'EOF' > /etc/rancher/rke2/config.yaml
 node-name: "${node_name}"
 node-ip: "${node_ip}"
@@ -93,6 +132,28 @@ echo "[INIT] Primary RKE2 control-plane node successfully bootstrapped!"
 
 %{ else ~}
 echo "[JOIN] Configuring joining RKE2 server node..."
+
+# Configure NFS client mount for /shared from primary node
+echo "[SHARED] Installing nfs-common..."
+DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y nfs-common
+mkdir -p /shared
+
+echo "[SHARED] Waiting for NFS server on ${init_node_ip}:2049..."
+for i in {1..60}; do
+  if timeout 2 bash -c "cat < /dev/null > /dev/tcp/${init_node_ip}/2049" 2>/dev/null; then
+    echo "[SHARED] NFS server reachable on ${init_node_ip}:2049!"
+    break
+  fi
+  sleep 5
+done
+
+if ! findmnt -M /shared >/dev/null 2>&1; then
+  if ! grep -q "${init_node_ip}:/shared" /etc/fstab; then
+    echo "${init_node_ip}:/shared /shared nfs nfsvers=4.2,rw,_netdev,soft,timeo=100 0 0" >> /etc/fstab
+  fi
+  systemctl daemon-reload
+  mount /shared || true
+fi
 
 cat <<'EOF' > /etc/rancher/rke2/config.yaml
 node-name: "${node_name}"
