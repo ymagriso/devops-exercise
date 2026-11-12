@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rke2-upgrade-plans
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ymagriso/devops-exercise.git
+    targetRevision: HEAD
+    path: argocd/apps/workloads/rke2-upgrade-plans
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: system-upgrade
+  syncPolicy:
+    automated:
+      # Never prune Plans automatically: deleting a Plan mid-upgrade is unsafe
+      prune: false
+      selfHeal: true
+    syncOptions:
+      # The Plan CRD is installed by the system-upgrade-controller Application
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

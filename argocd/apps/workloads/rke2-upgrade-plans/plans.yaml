@@ -1,0 +1,67 @@
+# RKE2 in-place upgrade Plans executed by the System Upgrade Controller.
+#
+# The target version below MUST stay in sync with `rke2_version` in
+# tofu/variables.tf (used to bootstrap new nodes). Renovate updates both
+# locations in the same PR (depName rancher/rke2).
+#
+# Kubernetes only supports upgrading one minor version at a time; Renovate is
+# configured to open a separate PR per minor release.
+---
+# Control-plane / etcd nodes: upgraded one at a time.
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata:
+  name: rke2-server
+  namespace: system-upgrade
+  labels:
+    rke2-upgrade: server
+spec:
+  # renovate: datasource=github-releases depName=rancher/rke2
+  version: v1.36.6+rke2r1
+  concurrency: 1
+  cordon: true
+  serviceAccountName: system-upgrade
+  nodeSelector:
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: In
+        values:
+          - "true"
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/etcd
+      operator: Exists
+      effect: NoExecute
+  upgrade:
+    image: rancher/rke2-upgrade
+---
+# Worker (agent) nodes: upgraded only after all servers finished.
+# The cluster currently has no agent nodes; this Plan is a no-op until some are added.
+apiVersion: upgrade.cattle.io/v1
+kind: Plan
+metadata:
+  name: rke2-agent
+  namespace: system-upgrade
+  labels:
+    rke2-upgrade: agent
+spec:
+  # renovate: datasource=github-releases depName=rancher/rke2
+  version: v1.36.6+rke2r1
+  concurrency: 1
+  cordon: true
+  serviceAccountName: system-upgrade
+  nodeSelector:
+    matchExpressions:
+      - key: node-role.kubernetes.io/control-plane
+        operator: DoesNotExist
+  prepare:
+    image: rancher/rke2-upgrade
+    args:
+      - prepare
+      - rke2-server
+  upgrade:
+    image: rancher/rke2-upgrade
