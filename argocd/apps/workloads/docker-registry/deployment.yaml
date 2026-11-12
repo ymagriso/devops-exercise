@@ -28,6 +28,12 @@ spec:
               value: /certs/tls.crt
             - name: REGISTRY_HTTP_TLS_KEY
               value: /certs/tls.key
+            - name: REGISTRY_AUTH
+              value: htpasswd
+            - name: REGISTRY_AUTH_HTPASSWD_REALM
+              value: "Registry Realm"
+            - name: REGISTRY_AUTH_HTPASSWD_PATH
+              value: /auth/htpasswd
           ports:
             - name: https
               containerPort: 5000
@@ -38,17 +44,16 @@ spec:
             - name: registry-cert
               mountPath: /certs
               readOnly: true
+            - name: auth-volume
+              mountPath: /auth
+              readOnly: true
           livenessProbe:
-            httpGet:
-              scheme: HTTPS
-              path: /
+            tcpSocket:
               port: 5000
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
-            httpGet:
-              scheme: HTTPS
-              path: /
+            tcpSocket:
               port: 5000
             initialDelaySeconds: 2
             periodSeconds: 5
@@ -67,3 +72,6 @@ spec:
         - name: registry-cert
           secret:
             secretName: docker-registry-tls
+        - name: auth-volume
+          secret:
+            secretName: docker-registry-auth

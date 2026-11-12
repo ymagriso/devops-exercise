@@ -130,6 +130,8 @@ jobs:
           ARGOCD_ADMIN_EMAIL: ${{ secrets.ARGOCD_ADMIN_EMAIL || secrets.ACME_EMAIL }}
           MONGO_ROOT_PASSWORD: ${{ secrets.MONGODB_ROOT_PASSWORD }}
           MONGO_REPLICA_KEY: ${{ secrets.MONGODB_REPLICA_SET_KEY }}
+          DOCKER_REGISTRY_USERNAME: ${{ secrets.DOCKER_REGISTRY_USERNAME || 'admin' }}
+          DOCKER_REGISTRY_PASSWORD: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
         run: |
           echo "Waiting for rke2-node-1 to finish initialization..."
           for i in {1..40}; do
@@ -230,6 +232,38 @@ jobs:
             kubectl create secret generic mongodb -n mongodb \
               --from-literal=mongodb-root-password="$MONGO_ROOT_PASSWORD" \
               --from-literal=mongodb-replica-set-key="$MONGO_REPLICA_KEY" --dry-run=client -o yaml | kubectl apply -f -
+          fi
+
+          echo "Configuring Docker Registry authentication..."
+          PROJECT_ID=$(gcloud config get-value project)
+          REGISTRY_AUTH_CACHE_URI="gs://${PROJECT_ID}-tofu-state/secrets/docker-registry-auth.json"
+          REG_USER="${DOCKER_REGISTRY_USERNAME:-admin}"
+
+          if [ -n "$DOCKER_REGISTRY_PASSWORD" ]; then
+            REG_PASS="$DOCKER_REGISTRY_PASSWORD"
+            sudo apt-get update -qq && sudo apt-get install -y -qq apache2-utils
+            HTPASSWD_CONTENT=$(htpasswd -Bbn "$REG_USER" "$REG_PASS")
+            kubectl create secret generic docker-registry-auth -n docker-registry \
+              --from-literal=htpasswd="$HTPASSWD_CONTENT" --dry-run=client -o yaml | kubectl apply -f -
+            kubectl get secret docker-registry-auth -n docker-registry -o json \
+              | jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.managedFields, .metadata.ownerReferences)' \
+              | gcloud storage cp - "${REGISTRY_AUTH_CACHE_URI}" 2>/dev/null || true
+          elif ! kubectl get secret docker-registry-auth -n docker-registry >/dev/null 2>&1; then
+            if gcloud storage ls "${REGISTRY_AUTH_CACHE_URI}" >/dev/null 2>&1; then
+              echo "Restoring cached docker-registry-auth Secret from ${REGISTRY_AUTH_CACHE_URI}..."
+              gcloud storage cat "${REGISTRY_AUTH_CACHE_URI}" | kubectl apply -f -
+            else
+              echo "Generating random initial password for docker-registry user '${REG_USER}'..."
+              sudo apt-get update -qq && sudo apt-get install -y -qq apache2-utils
+              GENERATED_PASS=$(openssl rand -base64 18)
+              HTPASSWD_CONTENT=$(htpasswd -Bbn "$REG_USER" "$GENERATED_PASS")
+              kubectl create secret generic docker-registry-auth -n docker-registry \
+                --from-literal=htpasswd="$HTPASSWD_CONTENT" --dry-run=client -o yaml | kubectl apply -f -
+              kubectl get secret docker-registry-auth -n docker-registry -o json \
+                | jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.managedFields, .metadata.ownerReferences)' \
+                | gcloud storage cp - "${REGISTRY_AUTH_CACHE_URI}" 2>/dev/null || true
+              echo "::notice::Docker Registry auth secret generated for user '${REG_USER}'. Set DOCKER_REGISTRY_PASSWORD in GitHub Secrets to override."
+            fi
           fi
 
           # Extract chart versions dynamically from Argo CD manifests (Single Source of Truth)

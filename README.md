@@ -101,7 +101,7 @@ devops-exercise/
             ├── docker-registry/
             │   ├── namespace.yaml
             │   ├── service.yaml                        # Exposes port 443 (HTTPS) & 5000
-            │   └── deployment.yaml                     # Native TLS with Let's Encrypt cert, storage on /shared/docker-registry
+            │   └── deployment.yaml                     # Native TLS (Let's Encrypt), htpasswd auth, storage on /shared/docker-registry
             ├── system-upgrade-controller/
             │   └── kustomization.yaml                  # Upstream pinned SUC manifests & CRDs
             └── rke2-upgrade-plans/
