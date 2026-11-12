@@ -157,13 +157,6 @@ jobs:
             kubectl label secret argocd-google-oidc -n argocd app.kubernetes.io/part-of=argocd --overwrite
           fi
 
-          ADMIN_EMAIL="${ARGOCD_ADMIN_EMAIL:-$ACME_EMAIL}"
-          if [ -n "$ADMIN_EMAIL" ]; then
-            echo "Configuring Argo CD admin RBAC for ${ADMIN_EMAIL}..."
-            kubectl -n argocd patch cm argocd-rbac-cm --type merge \
-              -p "{\"data\": {\"policy.csv\": \"g, ${ADMIN_EMAIL}, role:admin\"}}" 2>/dev/null || true
-          fi
-
           if [ -n "$MONGO_ROOT_PASSWORD" ] && [ -n "$MONGO_REPLICA_KEY" ]; then
             kubectl create secret generic mongodb -n mongodb \
               --from-literal=mongodb-root-password="$MONGO_ROOT_PASSWORD" \
@@ -203,6 +196,13 @@ jobs:
               --wait
           else
             echo "Argo CD is already installed; Argo CD GitOps manages lifecycle and upgrades."
+          fi
+
+          ADMIN_EMAIL="${ARGOCD_ADMIN_EMAIL:-$ACME_EMAIL}"
+          if [ -n "$ADMIN_EMAIL" ]; then
+            echo "Configuring Argo CD admin RBAC for ${ADMIN_EMAIL}..."
+            kubectl -n argocd patch cm argocd-rbac-cm --type merge \
+              -p "{\"data\": {\"policy.csv\": \"g, ${ADMIN_EMAIL}, role:admin\"}}" 2>/dev/null || true
           fi
 
           if [ -n "$CUSTOM_DOMAIN" ]; then
