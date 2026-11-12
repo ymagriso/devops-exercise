@@ -199,6 +199,18 @@ jobs:
             sed "s/argocd.yourdomain.com/argocd.${CUSTOM_DOMAIN}/g" argocd/certificate.yaml | kubectl apply -f -
             kubectl -n argocd patch cm argocd-cm --type merge \
               -p "{\"data\": {\"url\": \"https://argocd.${CUSTOM_DOMAIN}\"}}" 2>/dev/null || true
+
+            echo "Waiting for Argo CD TLS certificate to be issued..."
+            kubectl wait --for=condition=Ready certificate/argocd-server-tls -n argocd --timeout=120s 2>/dev/null || true
+
+            # Restart argocd-server if it has not yet loaded the issued certificate
+            if ! kubectl logs -n argocd deployment/argocd-server --tail=50 2>/dev/null | grep -q "Loading TLS configuration from secret argocd/argocd-server-tls"; then
+              echo "Restarting argocd-server to load the issued TLS certificate..."
+              kubectl rollout restart deployment argocd-server -n argocd
+              kubectl rollout status deployment argocd-server -n argocd --timeout=120s
+            else
+              echo "argocd-server already has the custom TLS secret loaded."
+            fi
           fi
 
           echo "Bootstrapping Argo CD Root Application..."
