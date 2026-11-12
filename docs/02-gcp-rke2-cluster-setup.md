@@ -91,7 +91,9 @@ Navigate to **Settings → Secrets and variables → Actions** in your GitHub re
 | `ACME_EMAIL` | Email address for Let's Encrypt certificate notices |
 | `CLOUDFLARE_API_TOKEN` | Cloudflare DNS API token with `Zone:DNS:Edit` permissions |
 | `CLOUDFLARED_TUNNEL_TOKEN` | Token for your Cloudflare Zero Trust Tunnel |
-| `ARGOCD_GOOGLE_OIDC_CLIENT_SECRET` | Google Cloud OAuth Client Secret for SSO login |
+| `ARGOCD_GOOGLE_OIDC_CLIENT_ID` | Google Cloud OAuth 2.0 Web Client ID (`<NUM>-<STR>.apps.googleusercontent.com`) |
+| `ARGOCD_GOOGLE_OIDC_CLIENT_SECRET` | Google Cloud OAuth 2.0 Client Secret (`GOCSPX-...`) |
+| `ARGOCD_ADMIN_EMAIL` | *(Optional)* Google email address granted `role:admin` in Argo CD RBAC (defaults to `ACME_EMAIL`) |
 | `MONGODB_ROOT_PASSWORD` | Secure root password for MongoDB |
 | `MONGODB_REPLICA_SET_KEY` | ReplicaSet key for MongoDB internal replication |
 
