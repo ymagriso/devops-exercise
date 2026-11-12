@@ -43,6 +43,16 @@
   ],
   "packageRules": [
     {
+      "description": "Route Terraform and OpenTofu provider and module lookups to the OpenTofu registry",
+      "matchDatasources": [
+        "terraform-provider",
+        "terraform-module"
+      ],
+      "registryUrls": [
+        "https://registry.opentofu.org"
+      ]
+    },
+    {
       "description": "Custom versioning and labels for RKE2 releases",
       "matchPackageNames": [
         "rancher/rke2"
