@@ -11,6 +11,11 @@ on:
         options:
           - apply
           - plan
+      allow_node_replacement:
+        description: "Allow destroying/replacing RKE2 node VMs (DANGEROUS: wipes etcd and all cluster data)"
+        required: false
+        default: false
+        type: boolean
   pull_request:
     branches:
       - main
@@ -78,19 +83,39 @@ jobs:
 
       - name: OpenTofu Plan
         id: plan
-        if: env.ACTION == 'plan'
         run: |
           PROJECT_ID=$(gcloud config get-value project)
           cd tofu
-          tofu plan -var="project_id=${PROJECT_ID}"
+          tofu plan -input=false -out=tfplan -var="project_id=${PROJECT_ID}"
+
+      - name: Guard Against Node VM Replacement
+        env:
+          ALLOW_NODE_REPLACEMENT: ${{ github.event.inputs.allow_node_replacement || 'false' }}
+        run: |
+          cd tofu
+          # Any delete action on an existing node VM (destroy or replace) destroys the whole
+          # HA cluster's etcd/data. Block it unless explicitly allowed via workflow_dispatch.
+          REPLACED=$(tofu show -json tfplan | jq -r '.resource_changes[]
+            | select(.type == "google_compute_instance")
+            | select(.change.actions | index("delete"))
+            | "\(.address): \(.change.actions | join("/"))"')
+          if [ -n "$REPLACED" ]; then
+            echo "::warning::This plan destroys or replaces RKE2 node VMs:"
+            echo "$REPLACED"
+            if [ "$ALLOW_NODE_REPLACEMENT" != "true" ]; then
+              echo "::error::Refusing to continue: node VM replacement wipes the cluster. RKE2 upgrades must go through the System Upgrade Controller. Re-run manually with allow_node_replacement=true if this is intended."
+              exit 1
+            fi
+          else
+            echo "No node VM destruction or replacement in this plan."
+          fi
 
       - name: OpenTofu Apply
         id: apply
         if: env.ACTION == 'apply' && github.event_name != 'pull_request'
         run: |
-          PROJECT_ID=$(gcloud config get-value project)
           cd tofu
-          tofu apply -auto-approve -var="project_id=${PROJECT_ID}"
+          tofu apply -input=false -auto-approve tfplan
 
       - name: Bootstrap Cluster, Core Services, Secrets & Domain
         if: env.ACTION == 'apply' && github.event_name != 'pull_request'
