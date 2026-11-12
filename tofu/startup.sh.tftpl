@@ -1,6 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Mount dedicated /var disk before starting RKE2 or writing logs
+VAR_DISK_DEV="/dev/disk/by-id/google-var-disk"
+
+# Wait for attached disk to be detected by kernel/udev
+for i in {1..30}; do
+  if [ -b "$VAR_DISK_DEV" ]; then
+    break
+  fi
+  sleep 1
+done
+
+if [ -b "$VAR_DISK_DEV" ]; then
+  # Format as ext4 if not already formatted
+  if ! blkid "$VAR_DISK_DEV" | grep -q 'TYPE='; then
+    echo "Formatting $VAR_DISK_DEV as ext4..."
+    mkfs.ext4 -m 0 -F "$VAR_DISK_DEV"
+  fi
+
+  # Mount /var if not already mounted
+  if ! findmnt -M /var | grep -q "$VAR_DISK_DEV"; then
+    echo "Configuring dedicated /var disk mount..."
+    mkdir -p /mnt/var_disk_init
+    mount "$VAR_DISK_DEV" /mnt/var_disk_init
+
+    # If new disk is empty (or only lost+found), copy base OS /var contents
+    if [ -z "$(ls -A /mnt/var_disk_init 2>/dev/null)" ] || [ "$(ls -A /mnt/var_disk_init 2>/dev/null)" = "lost+found" ]; then
+      echo "Copying base OS /var contents to dedicated disk..."
+      cp -a /var/. /mnt/var_disk_init/
+    fi
+
+    umount /mnt/var_disk_init
+    rmdir /mnt/var_disk_init
+
+    # Persist mount in /etc/fstab using UUID
+    DISK_UUID=$(blkid -s UUID -o value "$VAR_DISK_DEV")
+    if ! grep -q "UUID=$DISK_UUID" /etc/fstab; then
+      echo "UUID=$DISK_UUID /var ext4 defaults,nofail 0 2" >> /etc/fstab
+    fi
+
+    systemctl daemon-reload
+    mount /var
+  fi
+fi
+
 # Route stdout and stderr to both a bootstrap log file and the console
 exec > >(tee -a /var/log/rke2-bootstrap.log /dev/kmsg) 2>&1
 

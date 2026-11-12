@@ -40,7 +40,13 @@ variable "machine_type" {
 }
 
 variable "boot_disk_size" {
-  description = "Boot disk size in GB for each node."
+  description = "Boot disk size in GB for each node (root / partition)."
+  type        = number
+  default     = 10
+}
+
+variable "var_disk_size" {
+  description = "Dedicated /var persistent disk size in GB for each node."
   type        = number
   default     = 50
 }
