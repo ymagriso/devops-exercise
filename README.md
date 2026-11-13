@@ -59,7 +59,8 @@ k8s-resources/
 ├── .github/
 │   └── workflows/
 │       ├── tofu-apply.yml                              # OpenTofu plan/apply & zero-touch cluster bootstrap
-│       └── tofu-destroy.yml                            # OpenTofu safe teardown (requires "DESTROY" input)
+│       ├── tofu-destroy.yml                            # OpenTofu safe teardown (requires "DESTROY" input)
+│       └── cloudflare-tunnel.yml                       # Declarative Cloudflare Tunnel routes & DNS CNAME automation
 ├── tofu/                                               # Declarative GCP Infrastructure as Code
 │   ├── versions.tf                                     # OpenTofu & Google/Random provider constraints
 │   ├── providers.tf                                    # Provider configuration
@@ -69,7 +70,16 @@ k8s-resources/
 │   ├── firewall.tf                                     # IAP ingress & intra-cluster firewall rules
 │   ├── compute.tf                                      # Dedicated Service Account & 3x private VMs
 │   ├── startup.sh.tftpl                                # Unified RKE2 + Cilium automated bootstrap script
-│   └── outputs.tf                                      # Node IPs, helper IAP and kubeconfig commands
+│   ├── outputs.tf                                      # Node IPs, helper IAP and kubeconfig commands
+│   └── cloudflare/                                     # Declarative Cloudflare Tunnel routes & DNS CNAME stack
+│       ├── routes.yaml                                 # Ordered list of tunnel ingress routes
+│       ├── main.tf                                     # Tunnel config & proxied CNAME records
+│       ├── versions.tf                                 # OpenTofu & Cloudflare provider constraints
+│       ├── backend.tf                                  # GCS remote state backend (prefix: cloudflare-tunnel)
+│       ├── providers.tf                                # Cloudflare provider configuration
+│       ├── variables.tf                                # Account ID, Tunnel ID & private domain inputs
+│       ├── outputs.tf                                  # Sensitive zone & hostname outputs
+│       └── terraform.tfvars.example                    # Example variables file for local runs
 ├── docs/                                               # Modular step-by-step guides
 │   ├── 01-architecture-and-costs.md
 │   ├── 02-gcp-rke2-cluster-setup.md

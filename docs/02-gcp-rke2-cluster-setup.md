@@ -93,8 +93,11 @@ Navigate to **Settings → Secrets and variables → Actions** in your GitHub re
 | `GCP_WIF_PROVIDER` | Output from step 1 above (`projects/<NUM>/locations/global/...`) |
 | `CUSTOM_DOMAIN` | Your actual domain name (e.g., `example.com`) — kept private from Git |
 | `ACME_EMAIL` | Email address for Let's Encrypt certificate notices |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare DNS API token with `Zone:DNS:Edit` permissions |
-| `CLOUDFLARED_TUNNEL_TOKEN` | Token for your Cloudflare Zero Trust Tunnel |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API token with `Zone:DNS:Edit` (for `cert-manager` DNS-01), plus `Zone:Zone:Read` and `Account:Cloudflare Tunnel:Edit` if also used by the Cloudflare Tunnel workflow |
+| `CLOUDFLARE_TUNNEL_API_TOKEN` | *(Optional)* Dedicated Cloudflare API token (`Account:Cloudflare Tunnel:Edit`, `Zone:Zone:Read`, `Zone:DNS:Edit`) for [`cloudflare-tunnel.yml`](../.github/workflows/cloudflare-tunnel.yml); falls back to `CLOUDFLARE_API_TOKEN` if unset |
+| `CLOUDFLARED_TUNNEL_TOKEN` | Token for your Cloudflare Zero Trust Tunnel (also used by [`cloudflare-tunnel.yml`](../.github/workflows/cloudflare-tunnel.yml) to derive Account ID and Tunnel ID automatically) |
+| `CLOUDFLARE_ACCOUNT_ID` | *(Optional)* Explicit Cloudflare Account ID override for [`cloudflare-tunnel.yml`](../.github/workflows/cloudflare-tunnel.yml) |
+| `CLOUDFLARE_TUNNEL_ID` | *(Optional)* Explicit Cloudflare Tunnel UUID override for [`cloudflare-tunnel.yml`](../.github/workflows/cloudflare-tunnel.yml) |
 | `ARGOCD_GOOGLE_OIDC_CLIENT_ID` | Google Cloud OAuth 2.0 Web Client ID (`<NUM>-<STR>.apps.googleusercontent.com`) |
 | `ARGOCD_GOOGLE_OIDC_CLIENT_SECRET` | Google Cloud OAuth 2.0 Client Secret (`GOCSPX-...`) |
 | `ARGOCD_ADMIN_EMAIL` | *(Optional)* Google email address granted `role:admin` in Argo CD RBAC (defaults to `ACME_EMAIL`) |

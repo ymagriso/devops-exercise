@@ -1,0 +1,204 @@
+name: "Cloudflare Tunnel Routes (OpenTofu)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "OpenTofu Action to execute"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - apply
+          - plan
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "tofu/cloudflare/**"
+      - ".github/workflows/cloudflare-tunnel.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "tofu/cloudflare/**"
+      - ".github/workflows/cloudflare-tunnel.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: opentofu-cloudflare-tunnel
+  cancel-in-progress: false
+
+jobs:
+  cloudflare-tunnel:
+    name: "Cloudflare Tunnel Plan/Apply"
+    runs-on: ubuntu-latest
+    env:
+      ACTION: ${{ github.event_name == 'pull_request' && 'plan' || github.event.inputs.action || 'apply' }}
+      TF_IN_AUTOMATION: "1"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7.0.1
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3.0.1
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v2.0.2
+        with:
+          tofu_version: "1.13.9"
+
+      - name: Resolve Cloudflare Credentials & Domain
+        env:
+          RAW_API_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+          RAW_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARED_TUNNEL_TOKEN }}
+          RAW_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RAW_TUNNEL_ID: ${{ secrets.CLOUDFLARE_TUNNEL_ID }}
+          RAW_DOMAIN: ${{ secrets.CUSTOM_DOMAIN }}
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import sys
+
+          api_token = os.environ.get("RAW_API_TOKEN", "").strip()
+          tunnel_token = os.environ.get("RAW_TUNNEL_TOKEN", "").strip()
+          account_id = os.environ.get("RAW_ACCOUNT_ID", "").strip()
+          tunnel_id = os.environ.get("RAW_TUNNEL_ID", "").strip()
+          domain = os.environ.get("RAW_DOMAIN", "").strip()
+
+          if (not account_id or not tunnel_id) and tunnel_token:
+              try:
+                  padded = tunnel_token + "=" * (-len(tunnel_token) % 4)
+                  payload = json.loads(base64.b64decode(padded).decode("utf-8"))
+                  if not account_id:
+                      account_id = str(payload.get("a", "")).strip()
+                  if not tunnel_id:
+                      tunnel_id = str(payload.get("t", "")).strip()
+              except Exception as exc:
+                  print(f"::warning::Unable to decode account/tunnel IDs from CLOUDFLARED_TUNNEL_TOKEN: {exc}")
+
+          missing = []
+          if not api_token:
+              missing.append("CLOUDFLARE_TUNNEL_API_TOKEN (or CLOUDFLARE_API_TOKEN)")
+          if not account_id:
+              missing.append("CLOUDFLARE_ACCOUNT_ID (or valid CLOUDFLARED_TUNNEL_TOKEN)")
+          if not tunnel_id:
+              missing.append("CLOUDFLARE_TUNNEL_ID (or valid CLOUDFLARED_TUNNEL_TOKEN)")
+          if not domain:
+              missing.append("CUSTOM_DOMAIN")
+
+          if missing:
+              print("::error::Missing required GitHub Secrets: " + ", ".join(missing))
+              sys.exit(1)
+
+          print(f"::add-mask::{account_id}")
+          print(f"::add-mask::{tunnel_id}")
+          print(f"::add-mask::{domain}")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"CLOUDFLARE_API_TOKEN={api_token}\n")
+              env_file.write(f"TF_VAR_account_id={account_id}\n")
+              env_file.write(f"TF_VAR_tunnel_id={tunnel_id}\n")
+              env_file.write(f"TF_VAR_domain={domain}\n")
+          PY
+
+      - name: OpenTofu Init & Format / Validate
+        run: |
+          PROJECT_ID=$(gcloud config get-value project)
+
+          if ! gcloud storage buckets describe "gs://${PROJECT_ID}-tofu-state" >/dev/null 2>&1; then
+            echo "Creating remote state bucket gs://${PROJECT_ID}-tofu-state..."
+            gcloud storage buckets create "gs://${PROJECT_ID}-tofu-state" --location=me-west1 --uniform-bucket-level-access
+            gcloud storage buckets update "gs://${PROJECT_ID}-tofu-state" --versioning
+          fi
+
+          cd tofu/cloudflare
+          tofu fmt -check
+          tofu init \
+            -backend-config="bucket=${PROJECT_ID}-tofu-state" \
+            -backend-config="prefix=cloudflare-tunnel"
+          tofu validate
+
+      - name: Import Existing Cloudflare Resources (Before Apply)
+        if: env.ACTION == 'apply' && github.event_name != 'pull_request'
+        run: |
+          cd tofu/cloudflare
+          STATE_LIST=$(tofu state list 2>/dev/null || true)
+
+          # Import existing remote tunnel configuration if present and not yet in OpenTofu state
+          TUNNEL_ADDR="cloudflare_zero_trust_tunnel_cloudflared_config.tunnel"
+          if ! printf '%s\n' "$STATE_LIST" | grep -qxF "$TUNNEL_ADDR"; then
+            TUNNEL_RESP=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/accounts/${TF_VAR_account_id}/cfd_tunnel/${TF_VAR_tunnel_id}/configurations")
+            if [ "$(printf '%s' "$TUNNEL_RESP" | jq -r '.success == true and .result.config != null')" = "true" ]; then
+              echo "Importing existing Cloudflare Tunnel configuration into OpenTofu state..."
+              tofu import -input=false "$TUNNEL_ADDR" "${TF_VAR_account_id}/${TF_VAR_tunnel_id}"
+            else
+              echo "No existing remote tunnel configuration found to import; OpenTofu will create it."
+            fi
+          fi
+
+          # Look up Cloudflare Zone ID so pre-existing DNS CNAME records can be imported seamlessly
+          ZONE_RESP=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/zones?name=${TF_VAR_domain}&account.id=${TF_VAR_account_id}")
+          if [ "$(printf '%s' "$ZONE_RESP" | jq -r '.success')" != "true" ]; then
+            echo "::error::Failed to query Cloudflare Zones API. Ensure the API token has Zone:Zone:Read, Zone:DNS:Edit, and Account:Cloudflare Tunnel:Edit permissions."
+            printf '%s\n' "$ZONE_RESP" | jq -c '.errors // .'
+            exit 1
+          fi
+
+          ZONE_ID=$(printf '%s' "$ZONE_RESP" | jq -r '.result[0].id // empty')
+          if [ -z "$ZONE_ID" ]; then
+            echo "::error::Could not find Cloudflare Zone for configured CUSTOM_DOMAIN under the tunnel account."
+            exit 1
+          fi
+          echo "::add-mask::${ZONE_ID}"
+
+          SUBDOMAINS=$(tofu console <<< 'jsonencode(keys(local.dns_routes))' | jq -r 'fromjson | .[]')
+          for SUBDOMAIN in $SUBDOMAINS; do
+            DNS_ADDR="cloudflare_dns_record.route[\"${SUBDOMAIN}\"]"
+            if printf '%s\n' "$STATE_LIST" | grep -qxF "$DNS_ADDR"; then
+              continue
+            fi
+
+            FQDN="${SUBDOMAIN}.${TF_VAR_domain}"
+            CNAME_RESP=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?type=CNAME&name=${FQDN}")
+            RECORD_ID=$(printf '%s' "$CNAME_RESP" | jq -r '.result[0].id // empty')
+
+            if [ -n "$RECORD_ID" ]; then
+              echo "Importing existing CNAME record for route '${SUBDOMAIN}'..."
+              tofu import -input=false "$DNS_ADDR" "${ZONE_ID}/${RECORD_ID}"
+            else
+              CONFLICT_RESP=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+                "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${FQDN}")
+              CONFLICT_TYPE=$(printf '%s' "$CONFLICT_RESP" | jq -r '.result[0].type // empty')
+              if [ -n "$CONFLICT_TYPE" ]; then
+                echo "::error::Existing ${CONFLICT_TYPE} DNS record conflicts with CNAME for route '${SUBDOMAIN}'. Remove or convert it in Cloudflare DNS first."
+                exit 1
+              fi
+            fi
+          done
+
+      - name: OpenTofu Plan
+        run: |
+          cd tofu/cloudflare
+          tofu plan -input=false -out=tfplan
+
+      - name: OpenTofu Apply
+        if: env.ACTION == 'apply' && github.event_name != 'pull_request'
+        run: |
+          cd tofu/cloudflare
+          tofu apply -input=false -auto-approve tfplan

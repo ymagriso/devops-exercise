@@ -21,12 +21,14 @@ on:
       - main
     paths:
       - "tofu/**"
+      - "!tofu/cloudflare/**"
       - ".github/workflows/tofu-apply.yml"
   push:
     branches:
       - main
     paths:
       - "tofu/**"
+      - "!tofu/cloudflare/**"
       - ".github/workflows/tofu-apply.yml"
 
 permissions:
