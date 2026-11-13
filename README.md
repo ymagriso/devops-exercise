@@ -58,9 +58,8 @@ k8s-resources/
 ├── renovate.json                                       # Mend Renovate configuration (Helm, K8s, Docker & OpenTofu rules)
 ├── .github/
 │   └── workflows/
-│       ├── tofu-apply.yml                              # OpenTofu plan/apply & zero-touch cluster bootstrap
-│       ├── tofu-destroy.yml                            # OpenTofu safe teardown (requires "DESTROY" input)
-│       └── cloudflare-tunnel.yml                       # Declarative Cloudflare Tunnel routes & DNS CNAME automation
+│       ├── tofu-apply.yml                              # OpenTofu plan/apply (GCP + Cloudflare Tunnel) & cluster bootstrap
+│       └── tofu-destroy.yml                            # OpenTofu safe teardown (requires "DESTROY" input)
 ├── tofu/                                               # Declarative GCP Infrastructure as Code
 │   ├── versions.tf                                     # OpenTofu & Google/Random provider constraints
 │   ├── providers.tf                                    # Provider configuration

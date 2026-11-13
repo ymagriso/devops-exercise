@@ -83,15 +83,15 @@ kubectl create secret generic cloudflared-token \
 ```
 
 3. **Automated Tunnel Route & DNS CNAME Management (Recommended):**
-   All tunnel ingress routes and their corresponding proxied Cloudflare DNS CNAME records are managed declaratively in [`tofu/cloudflare/routes.yaml`](../tofu/cloudflare/routes.yaml) and applied automatically by [`.github/workflows/cloudflare-tunnel.yml`](../.github/workflows/cloudflare-tunnel.yml):
-   * Ensure `CLOUDFLARE_API_TOKEN` (or `CLOUDFLARE_TUNNEL_API_TOKEN`) has `Account:Cloudflare Tunnel:Edit`, `Zone:Zone:Read`, and `Zone:DNS:Edit` permissions.
+   All tunnel ingress routes and their corresponding proxied Cloudflare DNS CNAME records are managed declaratively in [`tofu/cloudflare/routes.yaml`](../tofu/cloudflare/routes.yaml) and applied automatically by [`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml):
+   * Ensure `CLOUDFLARE_API_TOKEN` (or `CLOUDFLARE_TUNNEL_API_TOKEN`) has `Cloudflare One Connector: cloudflared: Write` (or `Cloudflare Tunnel: Edit`), `Zone:Read`, and `DNS:Edit` permissions.
    * Edit [`tofu/cloudflare/routes.yaml`](../tofu/cloudflare/routes.yaml) to add, update, or remove routes:
      * **`argocd`:** `https://argocd-server.argocd.svc.cluster.local:443` (`origin_tls_verify_host: true` sets `origin_server_name: argocd.<your-domain>`)
      * **`demo`:** `http://devops-demo.devops-demo.svc.cluster.local:8080`
      * **`registry`:** `https://docker-registry.docker-registry.svc.cluster.local:443` (`origin_tls_verify_host: true` sets `origin_server_name: registry.<your-domain>`)
      * **`mongodb`:** `tcp://mongodb-0.mongodb-headless.mongodb.svc.cluster.local:27017`
      * **`mongo-metrics`:** `http://mongodb-metrics.mongodb.svc.cluster.local:9216`
-   * Pull requests touching `tofu/cloudflare/**` run `tofu plan`, and merges to `main` (or manual `workflow_dispatch`) import any pre-existing tunnel config/CNAMEs and run `tofu apply` against the isolated `cloudflare-tunnel` GCS state prefix.
+   * Pull requests touching `tofu/cloudflare/**` run `tofu plan` under the single required `OpenTofu Plan/Apply & Bootstrap` check (skipping GCP steps unless GCP files also changed), and merges to `main` (or manual `workflow_dispatch`) import any pre-existing tunnel config/CNAMEs and run `tofu apply` against the isolated `cloudflare-tunnel` GCS state prefix.
 
 ## Step 4: Bootstrap GitOps (Root App-of-Apps)
 
