@@ -13,7 +13,7 @@ spec:
         releaseName: argocd
         valueFiles:
           - $values/argocd/values.yaml
-    - repoURL: https://github.com/ymagriso/devops-exercise.git
+    - repoURL: https://github.com/ymagriso/k8s-resources.git
       targetRevision: HEAD
       ref: values
   destination:
