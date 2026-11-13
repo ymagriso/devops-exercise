@@ -612,7 +612,19 @@ jobs:
           fi
           echo "::add-mask::${ZONE_ID}"
 
-          SUBDOMAINS=$(tofu console <<< 'jsonencode(keys(local.dns_routes))' | jq -r 'fromjson | .[]')
+          SUBDOMAINS=$(python3 - <<'PY'
+          import re
+
+          seen = set()
+          with open("routes.yaml", encoding="utf-8") as f:
+              for line in f:
+                  line = line.split("#", 1)[0].strip()
+                  m = re.match(r"^(?:-\s*)?subdomain:\s*['\"]?([A-Za-z0-9._-]+)['\"]?$", line)
+                  if m and m.group(1) not in seen:
+                      seen.add(m.group(1))
+                      print(m.group(1))
+          PY
+          )
           for SUBDOMAIN in $SUBDOMAINS; do
             DNS_ADDR="cloudflare_dns_record.route[\"${SUBDOMAIN}\"]"
             if printf '%s\n' "$STATE_LIST" | grep -qxF "$DNS_ADDR"; then
