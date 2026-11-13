@@ -17,9 +17,8 @@ Because the RKE2 cluster nodes do not have public external IPs (`--network-inter
 
 ## Step 1: Create the Cloudflare API Token Secret
 
-1. In the [Cloudflare Dashboard](https://dash.cloudflare.com/profile/api-tokens) (*My Profile → API Tokens → Create Token*), use the **Edit zone DNS** template with:
-   * **Permissions:** `Zone : DNS : Edit`
-   * **Zone Resources:** `Include : Specific zone : <your-domain>`
+1. In the [Cloudflare Dashboard](https://dash.cloudflare.com/) (*Manage Account → Account API tokens* or *My Profile → API Tokens*), create a token with:
+   * **Specific domains (`<your-domain>`):** `DNS: Edit` (and `Zone: Read`, plus **Entire account:** `Cloudflare One Connector: cloudflared: Write` if sharing `CLOUDFLARE_API_TOKEN` with the Cloudflare Tunnel automation in [`tofu-apply.yml`](../.github/workflows/tofu-apply.yml))
 2. Create the `cert-manager` namespace and store the token in a Kubernetes Secret (kept out of Git):
 
 ```bash

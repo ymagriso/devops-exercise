@@ -84,7 +84,7 @@ kubectl create secret generic cloudflared-token \
 
 3. **Automated Tunnel Route & DNS CNAME Management (Recommended):**
    All tunnel ingress routes and their corresponding proxied Cloudflare DNS CNAME records are managed declaratively in [`tofu/cloudflare/routes.yaml`](../tofu/cloudflare/routes.yaml) and applied automatically by [`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml):
-   * Ensure `CLOUDFLARE_API_TOKEN` (or `CLOUDFLARE_TUNNEL_API_TOKEN`) has `Cloudflare One Connector: cloudflared: Write` (or `Cloudflare Tunnel: Edit`), `Zone:Read`, and `DNS:Edit` permissions.
+   * Ensure `CLOUDFLARE_API_TOKEN` (or `CLOUDFLARE_TUNNEL_API_TOKEN`) is an Account API token with two policies: **Specific domains (`<your-domain>`):** `DNS & Zones → DNS: Edit`, `Zone: Read`; **Entire account:** `Cloudflare One Connector: cloudflared: Write`.
    * Edit [`tofu/cloudflare/routes.yaml`](../tofu/cloudflare/routes.yaml) to add, update, or remove routes:
      * **`argocd`:** `https://argocd-server.argocd.svc.cluster.local:443` (`origin_tls_verify_host: true` sets `origin_server_name: argocd.<your-domain>`)
      * **`demo`:** `http://devops-demo.devops-demo.svc.cluster.local:8080`
