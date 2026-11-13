@@ -83,11 +83,18 @@ kubectl create secret generic cloudflared-token \
 ```
 
 3. In the tunnel's **Public Hostname** configuration in Cloudflare Zero Trust:
-   * **Subdomain:** `argocd`
-   * **Domain:** `<your-domain>`
-   * **Service Type:** `HTTPS`
-   * **URL:** `argocd-server.argocd.svc.cluster.local:443`
-   * **Additional application settings → TLS → Origin Server Name:** `argocd.<your-domain>` *(validates the Let's Encrypt certificate served by `argocd-server`)*
+   * **Argo CD:**
+     * **Subdomain:** `argocd`
+     * **Domain:** `<your-domain>`
+     * **Service Type:** `HTTPS`
+     * **URL:** `argocd-server.argocd.svc.cluster.local:443`
+     * **Additional application settings → TLS → Origin Server Name:** `argocd.<your-domain>` *(validates the Let's Encrypt certificate served by `argocd-server`)*
+   * **`devops-demo` (`sample-nodejs`):**
+     * **Subdomain:** `demo`
+     * **Domain:** `<your-domain>`
+     * **Service Type:** `HTTP`
+     * **URL:** `devops-demo.devops-demo.svc.cluster.local:8080`
+     * Cloudflare terminates HTTPS at the edge (`https://demo.<your-domain>`) and forwards HTTP inside the cluster to the `devops-demo` `ClusterIP` Service (endpoints: `/my-app`, `/about`, `/ready`, `/live`, `/classified`, and `/metrics`).
 
 ## Step 4: Bootstrap GitOps (Root App-of-Apps)
 

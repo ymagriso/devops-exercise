@@ -22,6 +22,7 @@ flowchart LR
             SUC["System Upgrade Controller (Rolling Upgrades)"]
             Mongo["MongoDB 8.0.13 (3-Node ReplicaSet + Metrics)"]
             Registry["Docker Registry (50 GB Shared /shared Disk)"]
+            Demo["devops-demo (Node.js App)"]
         end
     end
     GH["GitHub (ymagriso/k8s-resources)"]
@@ -29,6 +30,7 @@ flowchart LR
     CFD -->|"Outbound Tunnel"| NAT --> CF
     CFD -->|"Strict HTTPS (:443)"| Argo
     CFD -->|"TCP (:27017) & Metrics (:9216)"| Mongo
+    CFD -->|"HTTP (:8080)"| Demo
     CM -->|"Issues TLS Secret"| Argo
     Argo -->|"Syncs GitOps State"| GH
 ```
