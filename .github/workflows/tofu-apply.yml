@@ -28,9 +28,6 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - "tofu/**"
-      - ".github/workflows/tofu-apply.yml"
   push:
     branches:
       - main
@@ -105,21 +102,29 @@ jobs:
               out.write(f"run_cloudflare={str(run_cloudflare).lower()}\n")
           PY
 
+      - name: No Infrastructure Changes Detected
+        if: steps.changes.outputs.run_gcp != 'true' && steps.changes.outputs.run_cloudflare != 'true'
+        run: echo "Neither GCP nor Cloudflare OpenTofu files changed; skipping OpenTofu checks."
+
       - name: Authenticate to Google Cloud (WIF)
+        if: steps.changes.outputs.run_gcp == 'true' || steps.changes.outputs.run_cloudflare == 'true'
         uses: google-github-actions/auth@v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
+        if: steps.changes.outputs.run_gcp == 'true' || steps.changes.outputs.run_cloudflare == 'true'
         uses: google-github-actions/setup-gcloud@v3.0.1
 
       - name: Set up OpenTofu
+        if: steps.changes.outputs.run_gcp == 'true' || steps.changes.outputs.run_cloudflare == 'true'
         uses: opentofu/setup-opentofu@v2.0.2
         with:
           tofu_version: "1.13.9"
 
       - name: Ensure Remote State Bucket
+        if: steps.changes.outputs.run_gcp == 'true' || steps.changes.outputs.run_cloudflare == 'true'
         run: |
           PROJECT_ID=$(gcloud config get-value project)
 

@@ -29,6 +29,7 @@ flowchart LR
 
     CFD -->|"Outbound Tunnel"| NAT --> CF
     CFD -->|"Strict HTTPS (:443)"| Argo
+    CFD -->|"Strict HTTPS (:443)"| Registry
     CFD -->|"TCP (:27017) & Metrics (:9216)"| Mongo
     CFD -->|"HTTP (:8080)"| Demo
     CM -->|"Issues TLS Secret"| Argo

@@ -71,20 +71,10 @@ kubectl rollout status deployment argocd-server -n argocd
 
 ## Step 3: Configure the Cloudflare Tunnel Secret and Public Hostname
 
-1. In the [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/) (*Networks → Tunnels*), create a new **Cloudflared** tunnel (e.g., `rke2-cluster`) and copy the **Tunnel Token**.
-2. Create the `cloudflared` namespace and store the token in a Kubernetes Secret (kept out of Git):
-
-```bash
-kubectl create namespace cloudflared
-
-kubectl create secret generic cloudflared-token \
-    -n cloudflared \
-    --from-literal=token='<YOUR_CLOUDFLARE_TUNNEL_TOKEN>'
-```
-
-3. **Automated Tunnel Route & DNS CNAME Management (Recommended):**
+1. In the [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/) (*Networks → Tunnels*), create a new **Cloudflared** tunnel (e.g., `rke2-cluster`), copy the **Tunnel Token**, and save it in the `CLOUDFLARED_TUNNEL_TOKEN` GitHub Actions Secret ([`tofu-apply.yml`](../.github/workflows/tofu-apply.yml) automatically creates and updates `Secret/cloudflared-token` in the `cloudflared` namespace).
+2. **Automated Tunnel Route & DNS CNAME Management:**
    All tunnel ingress routes and their corresponding proxied Cloudflare DNS CNAME records are managed declaratively in [`tofu/cloudflare/routes.yaml`](../tofu/cloudflare/routes.yaml) and applied automatically by [`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml):
-   * Ensure `CLOUDFLARE_API_TOKEN` (or `CLOUDFLARE_TUNNEL_API_TOKEN`) has `Cloudflare One Connector: cloudflared: Write` (or `Cloudflare Tunnel: Edit`), `Zone:Read`, and `DNS:Edit` permissions.
+   * Ensure `CLOUDFLARE_API_TOKEN` (or `CLOUDFLARE_TUNNEL_API_TOKEN`) is an Account API token with two policies: **Specific domains (`<your-domain>`):** `DNS & Zones → DNS: Edit`, `Zone: Read`; **Entire account:** `Cloudflare One Connector: cloudflared: Write`.
    * Edit [`tofu/cloudflare/routes.yaml`](../tofu/cloudflare/routes.yaml) to add, update, or remove routes:
      * **`argocd`:** `https://argocd-server.argocd.svc.cluster.local:443` (`origin_tls_verify_host: true` sets `origin_server_name: argocd.<your-domain>`)
      * **`demo`:** `http://devops-demo.devops-demo.svc.cluster.local:8080`
