@@ -50,7 +50,7 @@ To allow GitHub Actions to provision resources securely without downloading perm
 
 ```bash
 export PROJECT_ID=$(gcloud config get-value project)
-export REPO="ymagriso/devops-exercise"
+export REPO="ymagriso/k8s-resources"
 export PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
 
 # Enable APIs
