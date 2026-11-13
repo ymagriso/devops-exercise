@@ -131,6 +131,43 @@ jobs:
             -backend-config="prefix=cloudflare-tunnel"
           tofu validate
 
+      - name: Verify Cloudflare API Token Permissions
+        run: |
+          # Verify token status (supports both Account API tokens and User API tokens)
+          VERIFY_ACCT=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${TF_VAR_account_id}/tokens/verify")
+          if [ "$(printf '%s' "$VERIFY_ACCT" | jq -r '.success')" = "true" ]; then
+            echo "Account API token verified: status=$(printf '%s' "$VERIFY_ACCT" | jq -r '.result.status')"
+          else
+            VERIFY_USER=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "https://api.cloudflare.com/client/v4/user/tokens/verify")
+            if [ "$(printf '%s' "$VERIFY_USER" | jq -r '.success')" = "true" ]; then
+              echo "User API token verified: status=$(printf '%s' "$VERIFY_USER" | jq -r '.result.status')"
+            else
+              echo "::error::Cloudflare API token verification failed. Check that CLOUDFLARE_API_TOKEN is valid and not truncated or expired."
+              printf '%s\n' "$VERIFY_ACCT" | jq -c '.errors // .'
+              exit 1
+            fi
+          fi
+
+          ZONE_CHECK=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/zones?name=${TF_VAR_domain}")
+          if [ "$(printf '%s' "$ZONE_CHECK" | jq -r '.success')" != "true" ]; then
+            echo "::error::Cloudflare Zone lookup failed. Ensure the token has Zone:Read and DNS:Edit permissions for the domain (if scoped to 'Specific domains', try 'All domains' if /zones list still returns 9109)."
+            printf '%s\n' "$ZONE_CHECK" | jq -c '.errors // .'
+            exit 1
+          fi
+          echo "Cloudflare Zone lookup succeeded."
+
+          TUNNEL_CHECK=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "https://api.cloudflare.com/client/v4/accounts/${TF_VAR_account_id}/cfd_tunnel/${TF_VAR_tunnel_id}/configurations")
+          if [ "$(printf '%s' "$TUNNEL_CHECK" | jq -r '.success')" != "true" ]; then
+            echo "::error::Cloudflare Tunnel config read failed. Ensure the token has 'Cloudflare One Connector: cloudflared: Write' (or 'Cloudflare Tunnel: Edit') under Entire account."
+            printf '%s\n' "$TUNNEL_CHECK" | jq -c '.errors // .'
+            exit 1
+          fi
+          echo "Cloudflare Tunnel config access verified."
+
       - name: Import Existing Cloudflare Resources (Before Apply)
         if: env.ACTION == 'apply' && github.event_name != 'pull_request'
         run: |
@@ -152,7 +189,7 @@ jobs:
 
           # Look up Cloudflare Zone ID so pre-existing DNS CNAME records can be imported seamlessly
           ZONE_RESP=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-            "https://api.cloudflare.com/client/v4/zones?name=${TF_VAR_domain}&account.id=${TF_VAR_account_id}")
+            "https://api.cloudflare.com/client/v4/zones?name=${TF_VAR_domain}")
           if [ "$(printf '%s' "$ZONE_RESP" | jq -r '.success')" != "true" ]; then
             echo "::error::Failed to query Cloudflare Zones API. Ensure the API token has Zone:Zone:Read, Zone:DNS:Edit, and Account:Cloudflare Tunnel:Edit permissions."
             printf '%s\n' "$ZONE_RESP" | jq -c '.errors // .'

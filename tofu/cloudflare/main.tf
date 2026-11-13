@@ -53,9 +53,6 @@ locals {
 data "cloudflare_zone" "primary" {
   filter = {
     name = var.domain
-    account = {
-      id = var.account_id
-    }
   }
 }
 
