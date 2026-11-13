@@ -10,13 +10,13 @@ spec:
   source:
     repoURL: registry.yourdomain.com/charts
     chart: devops-demo
-    targetRevision: 1.0.0
+    targetRevision: 1.0.0-rc1
     helm:
       releaseName: devops-demo
       valuesObject:
         image:
           repository: registry.yourdomain.com/devops-demo
-          tag: 1.0.0
+          tag: 1.0.0-rc1
   destination:
     server: https://kubernetes.default.svc
     namespace: devops-demo
