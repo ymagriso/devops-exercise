@@ -8,7 +8,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/ymagriso/devops-exercise.git
+    repoURL: https://github.com/ymagriso/k8s-resources.git
     targetRevision: HEAD
     path: argocd/apps/workloads/cloudflared
   destination:

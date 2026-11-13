@@ -24,7 +24,7 @@ flowchart LR
             Registry["Docker Registry (50 GB Shared /shared Disk)"]
         end
     end
-    GH["GitHub (ymagriso/devops-exercise)"]
+    GH["GitHub (ymagriso/k8s-resources)"]
 
     CFD -->|"Outbound Tunnel"| NAT --> CF
     CFD -->|"Strict HTTPS (:443)"| Argo
@@ -51,7 +51,7 @@ flowchart LR
 ## Repository Structure
 
 ```text
-devops-exercise/
+k8s-resources/
 ├── README.md                                           # Overview, architecture & documentation index
 ├── renovate.json                                       # Mend Renovate configuration (Helm, K8s, Docker & OpenTofu rules)
 ├── .github/
@@ -93,6 +93,7 @@ devops-exercise/
         ├── mongodb.yaml                                # Bitnami MongoDB ReplicaSet GitOps Application
         ├── system-upgrade-controller.yaml              # Rancher System Upgrade Controller Application
         ├── rke2-upgrade-plans.yaml                     # RKE2 automated upgrade Plans Application
+        ├── devops-demo.yaml                            # sample-nodejs OCI Helm GitOps Application
         ├── docker-registry.yaml                        # Docker Registry GitOps Application
         └── workloads/
             ├── cloudflared/

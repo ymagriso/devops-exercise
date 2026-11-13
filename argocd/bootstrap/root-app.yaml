@@ -8,7 +8,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/ymagriso/devops-exercise.git
+    repoURL: https://github.com/ymagriso/k8s-resources.git
     targetRevision: HEAD
     path: argocd/apps
     directory:
@@ -16,9 +16,17 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      name: devops-demo
+      jsonPointers:
+        - /spec/source/repoURL
+        - /spec/source/helm/valuesObject/image/repository
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - RespectIgnoreDifferences=true
