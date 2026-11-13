@@ -1,0 +1,36 @@
+# Declarative Cloudflare Tunnel public hostname routes and DNS CNAME records.
+# Rules are evaluated in the order listed below, followed by a catch-all HTTP 404 rule.
+#
+# Supported fields per route:
+#   subdomain:               Subdomain label under var.domain (e.g., "argocd" -> argocd.<domain>)
+#   service:                 Cluster internal target URL (http://, https://, tcp://, etc.)
+#   path:                    (Optional) URL path regex constraint
+#   origin_tls_verify_host:  (Optional, bool) Expect origin TLS cert matching <subdomain>.<domain>
+#   origin_server_name:      (Optional, string) Explicit TLS SNI/origin server name override
+#   no_tls_verify:           (Optional, bool) Disable TLS certificate verification on origin
+#   http2_origin:            (Optional, bool) Connect to HTTPS origin over HTTP/2
+#   proxied:                 (Optional, bool, default true) Proxy DNS CNAME through Cloudflare edge
+#   comment:                 (Optional, string) Description stored on the Cloudflare DNS record
+
+routes:
+  - subdomain: argocd
+    service: https://argocd-server.argocd.svc.cluster.local:443
+    origin_tls_verify_host: true
+    comment: Argo CD Web UI & CLI (strict HTTPS via Let's Encrypt)
+
+  - subdomain: demo
+    service: http://devops-demo.devops-demo.svc.cluster.local:8080
+    comment: devops-demo Node.js application
+
+  - subdomain: registry
+    service: https://docker-registry.docker-registry.svc.cluster.local:443
+    origin_tls_verify_host: true
+    comment: Private OCI & Docker Registry (strict HTTPS via Let's Encrypt)
+
+  - subdomain: mongodb
+    service: tcp://mongodb-0.mongodb-headless.mongodb.svc.cluster.local:27017
+    comment: MongoDB ReplicaSet primary TCP access via cloudflared access
+
+  - subdomain: mongo-metrics
+    service: http://mongodb-metrics.mongodb.svc.cluster.local:9216
+    comment: MongoDB Prometheus metrics exporter

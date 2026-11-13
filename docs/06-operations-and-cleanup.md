@@ -30,7 +30,7 @@ This repository uses the [**Mend Renovate**](https://developer.mend.io) GitHub A
 
 | Renovate Manager | Pattern (`managerFilePatterns`) | Tracked Dependencies |
 | :--- | :--- | :--- |
-| **`terraform`** | `/^tofu/.*\.tf$/` | • OpenTofu required version<br>• `hashicorp/google` provider<br>• `hashicorp/random` provider (routed to `registry.opentofu.org`) |
+| **`terraform`** | `/^tofu/.*\.tf$/` | • OpenTofu required version<br>• `hashicorp/google` provider<br>• `hashicorp/random` provider<br>• `cloudflare/cloudflare` provider in [`tofu/cloudflare/versions.tf`](../tofu/cloudflare/versions.tf) (all routed to `registry.opentofu.org`) |
 | **`custom.regex` (RKE2)** | `/^tofu/variables\.tf$/`<br>`/^argocd/apps/workloads/rke2-upgrade-plans/.+\.ya?ml$/` | • `rancher/rke2` GitHub releases (synchronized across both OpenTofu variable defaults and runtime SUC `Plan` CRDs) |
 | **`custom.regex` (SUC)** | `/^argocd/apps/workloads/system-upgrade-controller/kustomization\.ya?ml$/` | • `rancher/system-upgrade-controller` GitHub releases |
 | **`argocd`** | `/^argocd/(apps\|bootstrap)/[^/]+\.ya?ml$/` | • `argo-cd` Helm chart in [`argocd/apps/argocd.yaml`](../argocd/apps/argocd.yaml)<br>• `cert-manager` Helm chart in [`argocd/apps/cert-manager.yaml`](../argocd/apps/cert-manager.yaml)<br>• `mongodb` OCI Helm chart in [`argocd/apps/mongodb.yaml`](../argocd/apps/mongodb.yaml) |

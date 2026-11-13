@@ -82,14 +82,10 @@ echo "Root Password: $MONGODB_ROOT_PASSWORD"
 
 Because the `cloudflared` connector already runs inside the cluster (`cloudflare` namespace), it can route TCP traffic directly to the headless MongoDB service without opening GCP firewall ports or paying for external load balancers.
 
-1. **Add a Published Application Route in Cloudflare Zero Trust Dashboard:**
-   * Go to **Networks → Connectors → Cloudflare Tunnels** and edit **`rke2-argocd-tunnel`**.
-   * Under **Published application routes**, click **Add a published application route**:
-     * **Subdomain:** `mongodb`
-     * **Domain:** `<your-domain>` (e.g., `mongodb.yourdomain.com`)
-     * **Service Type:** **`TCP`**
-     * **URL:** `mongodb-0.mongodb-headless.mongodb.svc.cluster.local:27017`
-   * Click **Save**.
+1. **Declarative Tunnel Route (`tofu/cloudflare/routes.yaml`):**
+   The `mongodb` TCP route and its proxied DNS CNAME record (`mongodb.<your-domain>`) are managed declaratively in [`tofu/cloudflare/routes.yaml`](../tofu/cloudflare/routes.yaml) and applied via [`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml):
+   * **Subdomain:** `mongodb`
+   * **Service:** `tcp://mongodb-0.mongodb-headless.mongodb.svc.cluster.local:27017`
 
 2. **Connect from Your Workstation Using Docker (No Local Install Needed):**
    Open a terminal and run `cloudflared access tcp` inside Docker to bridge `localhost:27017` to the Cloudflare Tunnel:
@@ -116,13 +112,10 @@ docker run --rm -it --network host mongo:8.0.13 \
 
 The Bitnami chart creates a `ClusterIP` service **`mongodb-metrics.mongodb.svc.cluster.local:9216`** exposing Prometheus metrics at `/metrics`.
 
-1. **Add a Published Application Route in Cloudflare Zero Trust Dashboard:**
-   * Edit **`rke2-argocd-tunnel`** → **Published application routes** → **Add a published application route**:
-     * **Subdomain:** `mongo-metrics`
-     * **Domain:** `<your-domain>` (e.g., `mongo-metrics.yourdomain.com`)
-     * **Service Type:** **`HTTP`**
-     * **URL:** `mongodb-metrics.mongodb.svc.cluster.local:9216`
-   * Click **Save**.
+1. **Declarative Tunnel Route (`tofu/cloudflare/routes.yaml`):**
+   The `mongo-metrics` HTTP route and its proxied DNS CNAME record (`mongo-metrics.<your-domain>`) are managed declaratively in [`tofu/cloudflare/routes.yaml`](../tofu/cloudflare/routes.yaml) and applied via [`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml):
+   * **Subdomain:** `mongo-metrics`
+   * **Service:** `http://mongodb-metrics.mongodb.svc.cluster.local:9216`
    * *(Recommended for production)* Under **Access → Applications**, add a Zero Trust Access policy (e.g., Google OIDC or a Service Token) for `mongo-metrics.<your-domain>` so only authorized scrapers or users can view metrics.
 
 2. **Verify the Externalized Metrics Endpoint:**

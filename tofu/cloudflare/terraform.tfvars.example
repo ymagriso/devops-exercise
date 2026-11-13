@@ -1,0 +1,9 @@
+# Copy this file to terraform.tfvars and populate with your settings:
+# cp terraform.tfvars.example terraform.tfvars
+#
+# Also export CLOUDFLARE_API_TOKEN in your shell before running tofu:
+# export CLOUDFLARE_API_TOKEN="<token-with-Tunnel:Edit-Zone:Read-DNS:Edit>"
+
+account_id = "your-cloudflare-account-id"
+tunnel_id  = "your-cloudflare-tunnel-uuid"
+domain     = "example.com"
