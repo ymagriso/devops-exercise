@@ -389,14 +389,24 @@ jobs:
               kubectl label secret argocd-oci-registry -n argocd \
                 argocd.argoproj.io/secret-type=repository --overwrite
             fi
-
-            if [ -f argocd/apps/devops-demo.yaml ]; then
-              echo "Applying devops-demo Argo CD Application with custom registry domain..."
-              sed "s/registry.yourdomain.com/registry.${CUSTOM_DOMAIN}/g" argocd/apps/devops-demo.yaml | kubectl apply -f -
-            fi
           fi
 
           echo "Bootstrapping Argo CD Root Application..."
           kubectl apply -f argocd/bootstrap/root-app.yaml
+
+          if [ -n "$CUSTOM_DOMAIN" ] && [ -f argocd/apps/devops-demo.yaml ]; then
+            # Allow Argo CD controller to reconcile root-apps ignoreDifferences/RespectIgnoreDifferences
+            # before patching devops-demo with the custom registry domain.
+            for _ in $(seq 1 10); do
+              PHASE=$(kubectl get application root-apps -n argocd -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)
+              if [ "$PHASE" != "Running" ]; then
+                break
+              fi
+              sleep 2
+            done
+            sleep 2
+            echo "Applying devops-demo Argo CD Application with custom registry domain..."
+            sed "s/registry.yourdomain.com/registry.${CUSTOM_DOMAIN}/g" argocd/apps/devops-demo.yaml | kubectl apply -f -
+          fi
 
           echo "Deployment and bootstrap sequence finished successfully!"
