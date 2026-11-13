@@ -19,15 +19,7 @@ Because the RKE2 cluster nodes do not have public external IPs (`--network-inter
 
 1. In the [Cloudflare Dashboard](https://dash.cloudflare.com/) (*Manage Account → Account API tokens* or *My Profile → API Tokens*), create a token with:
    * **Specific domains (`<your-domain>`):** `DNS: Edit` (and `Zone: Read`, plus **Entire account:** `Cloudflare One Connector: cloudflared: Write` if sharing `CLOUDFLARE_API_TOKEN` with the Cloudflare Tunnel automation in [`tofu-apply.yml`](../.github/workflows/tofu-apply.yml))
-2. Create the `cert-manager` namespace and store the token in a Kubernetes Secret (kept out of Git):
-
-```bash
-kubectl create namespace cert-manager
-
-kubectl create secret generic cloudflare-api-token-secret \
-    -n cert-manager \
-    --from-literal=api-token='<YOUR_CLOUDFLARE_API_TOKEN>'
-```
+2. Store the token in the `CLOUDFLARE_API_TOKEN` GitHub Actions Secret. [`tofu-apply.yml`](../.github/workflows/tofu-apply.yml) automatically creates and updates `Secret/cloudflare-api-token-secret` in the `cert-manager` namespace.
 
 ## Step 2: Install cert-manager via Helm
 
