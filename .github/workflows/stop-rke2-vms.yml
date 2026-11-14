@@ -2,9 +2,8 @@ name: "Nightly Stop RKE2 VMs"
 
 on:
   schedule:
-    # Trigger hourly across 20:00–04:00 UTC to cover 23:00–06:00 Asia/Jerusalem
-    # in both Israel Standard Time (UTC+2) and Israel Daylight Time (UTC+3).
-    - cron: "0 20-23,0-4 * * *"
+    - cron: "0 23,0-6 * * *"
+      timezone: "Asia/Jerusalem"
   workflow_dispatch:
 
 permissions:
@@ -22,39 +21,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check Israel Time Window (23:00-06:00)
-        id: window
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          ISRAEL_HOUR=$(TZ=Asia/Jerusalem date +%-H)
-          ISRAEL_TIME=$(TZ=Asia/Jerusalem date '+%Y-%m-%d %H:%M:%S %Z')
-          echo "Current Israel time: ${ISRAEL_TIME} (hour=${ISRAEL_HOUR})"
-
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "Manual workflow_dispatch trigger; bypassing schedule window check."
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          elif [ "$ISRAEL_HOUR" -eq 23 ] || [ "$ISRAEL_HOUR" -le 6 ]; then
-            echo "Within 23:00-06:00 Israel time shutdown window."
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Outside 23:00-06:00 Israel time window; skipping VM check."
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Authenticate to Google Cloud (WIF)
-        if: steps.window.outputs.should_run == 'true'
         uses: google-github-actions/auth@v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
-        if: steps.window.outputs.should_run == 'true'
         uses: google-github-actions/setup-gcloud@v3.0.1
 
       - name: Stop Running RKE2 VMs
-        if: steps.window.outputs.should_run == 'true'
         run: |
           RUNNING=$(gcloud compute instances list \
             --filter="name~'^rke2-node-' AND status=RUNNING" \
