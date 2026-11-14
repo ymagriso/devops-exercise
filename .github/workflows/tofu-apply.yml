@@ -223,35 +223,7 @@ jobs:
           export KUBECONFIG=$(pwd)/rke2-kubeconfig.yaml
           kubectl get nodes -o wide
 
-          echo "Configuring and verifying 3-node replicated GlusterFS /shared storage (with automatic NFS migration)..."
-          MIGRATED_FROM_NFS="false"
-          if gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a \
-            --command='findmnt -n -o FSTYPE -M /shared 2>/dev/null | grep -Eq "^(ext4|nfs)" || grep -q " /shared ext4 " /etc/fstab' 2>/dev/null; then
-            echo "Detected legacy single-node NFS /shared setup. Scaling down workloads using /shared before cutover..."
-            MIGRATED_FROM_NFS="true"
-            kubectl scale deployment/docker-registry -n docker-registry --replicas=0 2>/dev/null || true
-            sleep 5
-
-            for n in rke2-node-2 rke2-node-3; do
-              gcloud compute ssh $n --tunnel-through-iap --zone=me-west1-a --command='
-                sudo umount -lf /shared 2>/dev/null || true
-                sudo sed -i "\|:/shared|d" /etc/fstab
-                sudo systemctl daemon-reload
-              '
-            done
-
-            gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a --command='
-              sudo systemctl disable --now nfs-server.service 2>/dev/null || true
-              if [ -f /etc/exports ]; then
-                sudo sed -i "\|/shared |d" /etc/exports
-                sudo exportfs -ra 2>/dev/null || true
-              fi
-              sudo umount -lf /shared 2>/dev/null || true
-              sudo sed -i "\| /shared ext4 |d" /etc/fstab
-              sudo systemctl daemon-reload
-            '
-          fi
-
+          echo "Configuring and verifying 3-node replicated GlusterFS /shared storage..."
           for n in rke2-node-1 rke2-node-2 rke2-node-3; do
             echo "Preparing GlusterFS brick disk (/mnt/shared-brick) and daemon on $n..."
             gcloud compute ssh $n --tunnel-through-iap --zone=me-west1-a --command='
@@ -270,7 +242,7 @@ jobs:
                 sudo mkdir -p /mnt/shared-brick/brick
                 if ! command -v glusterd >/dev/null 2>&1; then
                   sudo DEBIAN_FRONTEND=noninteractive apt-get update
-                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y glusterfs-server rsync
+                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y glusterfs-server
                 fi
                 sudo systemctl enable --now glusterd.service
               fi
@@ -308,29 +280,10 @@ jobs:
             '
           done
 
-          echo "Migrating any legacy pre-GlusterFS data on rke2-node-1 into replicated /shared..."
           gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a --command='
-            if findmnt -n -o FSTYPE -M /shared 2>/dev/null | grep -q "glusterfs"; then
-              sudo apt-get install -y rsync >/dev/null 2>&1 || true
-              for item in /mnt/shared-brick/*; do
-                [ -e "$item" ] || continue
-                base=$(basename "$item")
-                if [ "$base" != "brick" ] && [ "$base" != "lost+found" ]; then
-                  echo "Migrating /mnt/shared-brick/$base -> /shared/$base (replicated across all 3 nodes)..."
-                  sudo rsync -aAX "$item" /shared/
-                  sudo rm -rf "$item"
-                fi
-              done
-              sudo chmod 777 /shared
-              sudo mkdir -p /shared/docker-registry && sudo chmod 777 /shared/docker-registry
-            fi
+            sudo chmod 777 /shared
+            sudo mkdir -p /shared/docker-registry && sudo chmod 777 /shared/docker-registry
           '
-
-          if [ "$MIGRATED_FROM_NFS" = "true" ]; then
-            echo "Restoring workloads using /shared after GlusterFS cutover..."
-            kubectl scale deployment/docker-registry -n docker-registry --replicas=1 2>/dev/null || true
-            kubectl rollout restart deployment/docker-registry -n docker-registry 2>/dev/null || true
-          fi
 
           echo "Checking /shared GlusterFS mount and volume status across all nodes:"
           gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a --command='sudo gluster volume status shared-vol' || true
