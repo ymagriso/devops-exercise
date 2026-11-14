@@ -82,19 +82,25 @@ jobs:
                       high_count += 1
                   findings.append((sev, target, m.get("ID", ""), m.get("Title", "")))
 
+          lines = [
+              "## 🛡️ Trivy IaC & Kubernetes Manifest Scan (`trivy config`)\n\n",
+              "- **Scanned paths:** `tofu/`, `argocd/`, `cert-manager/`, `mongodb/`\n",
+              f"- **Findings (`CRITICAL` / `HIGH`):** `{crit_count}` Critical, `{high_count}` High\n\n",
+          ]
+          if findings:
+              lines.append("| Severity | Target | Rule ID | Title |\n")
+              lines.append("| :--- | :--- | :--- | :--- |\n")
+              for sev, target, rid, title in findings[:50]:
+                  safe_title = title.replace("|", "\\|")
+                  lines.append(f"| **{sev}** | `{target}` | `{rid}` | {safe_title} |\n")
+              lines.append("\n")
+          else:
+              lines.append("> ✅ No `HIGH` or `CRITICAL` IaC misconfigurations detected.\n\n")
+
+          summary_md = "".join(lines)
+          print(summary_md, flush=True)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
-              out.write("## 🛡️ Trivy IaC & Kubernetes Manifest Scan (`trivy config`)\n\n")
-              out.write(f"- **Scanned paths:** `tofu/`, `argocd/`, `cert-manager/`, `mongodb/`\n")
-              out.write(f"- **Findings (`CRITICAL` / `HIGH`):** `{crit_count}` Critical, `{high_count}` High\n\n")
-              if findings:
-                  out.write("| Severity | Target | Rule ID | Title |\n")
-                  out.write("| :--- | :--- | :--- | :--- |\n")
-                  for sev, target, rid, title in findings[:50]:
-                      safe_title = title.replace("|", "\\|")
-                      out.write(f"| **{sev}** | `{target}` | `{rid}` | {safe_title} |\n")
-                  out.write("\n")
-              else:
-                  out.write("> ✅ No `HIGH` or `CRITICAL` IaC misconfigurations detected.\n\n")
+              out.write(summary_md)
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as gh_out:
               gh_out.write(f"config_critical={crit_count}\n")
@@ -324,7 +330,7 @@ jobs:
               img = item["image"]
               sources = ", ".join(f"`{s}`" for s in item["sources"])
               out_file = f"trivy-image-{idx}.json"
-              print(f"[{idx}/{len(image_list)}] Scanning image: {img}")
+              print(f"[{idx}/{len(image_list)}] Scanning image: {img}", flush=True)
 
               proc = subprocess.run(
                   [
@@ -332,8 +338,6 @@ jobs:
                       "image",
                       "--scanners",
                       "vuln",
-                      "--pkg-types",
-                      "os,library",
                       "--severity",
                       "HIGH,CRITICAL",
                       "--format",
@@ -349,6 +353,7 @@ jobs:
               )
 
               if proc.returncode != 0 or not os.path.exists(out_file):
+                  print(f"  -> Scan failed for {img} (rc={proc.returncode}):\n{proc.stderr}\n{proc.stdout}", flush=True)
                   summary_rows.append((img, sources, "-", "-", "-", "⚠️ Scan/Pull Failed"))
                   continue
 
@@ -402,20 +407,26 @@ jobs:
                   lines.append("\n</details>\n")
                   details_blocks.append("".join(lines))
 
+          out_lines = [
+              "## 📦 Trivy Container Image Vulnerability Scan (`trivy image`)\n\n",
+              f"- **Images scanned:** `{len(image_list)}`\n",
+              f"- **Private Docker Registry:** {priv_status}\n",
+              f"- **Total findings:** `{total_crit}` Critical (`{total_fixable_crit}` fixable), `{total_high}` High\n\n",
+              "| Image | Source(s) | Critical | High | Fixable | Status |\n",
+              "| :--- | :--- | :---: | :---: | :---: | :--- |\n",
+          ]
+          for img, sources, c, h, fx, st in summary_rows:
+              out_lines.append(f"| `{img}` | {sources} | {c} | {h} | {fx} | {st} |\n")
+          out_lines.append("\n")
+          if details_blocks:
+              out_lines.append("### 🔍 Per-Image Vulnerability Details\n\n")
+              for blk in details_blocks:
+                  out_lines.append(blk)
+
+          image_summary_md = "".join(out_lines)
+          print(image_summary_md, flush=True)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
-              out.write("## 📦 Trivy Container Image Vulnerability Scan (`trivy image`)\n\n")
-              out.write(f"- **Images scanned:** `{len(image_list)}`\n")
-              out.write(f"- **Private Docker Registry:** {priv_status}\n")
-              out.write(f"- **Total findings:** `{total_crit}` Critical (`{total_fixable_crit}` fixable), `{total_high}` High\n\n")
-              out.write("| Image | Source(s) | Critical | High | Fixable | Status |\n")
-              out.write("| :--- | :--- | :---: | :---: | :---: | :--- |\n")
-              for img, sources, c, h, fx, st in summary_rows:
-                  out.write(f"| `{img}` | {sources} | {c} | {h} | {fx} | {st} |\n")
-              out.write("\n")
-              if details_blocks:
-                  out.write("### 🔍 Per-Image Vulnerability Details\n\n")
-                  for blk in details_blocks:
-                      out.write(blk)
+              out.write(image_summary_md)
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as gh_out:
               gh_out.write(f"fixable_critical={total_fixable_crit}\n")
