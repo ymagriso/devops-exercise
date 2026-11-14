@@ -223,47 +223,120 @@ jobs:
           export KUBECONFIG=$(pwd)/rke2-kubeconfig.yaml
           kubectl get nodes -o wide
 
-          echo "Verifying /shared filesystem and NFS mounts across all nodes..."
-          gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a --command='
-            if [ -b "/dev/disk/by-id/google-shared-disk" ]; then
-              if ! findmnt -M /shared >/dev/null 2>&1; then
-                if ! blkid /dev/disk/by-id/google-shared-disk | grep -q "TYPE="; then
+          echo "Configuring and verifying 3-node replicated GlusterFS /shared storage (with automatic NFS migration)..."
+          MIGRATED_FROM_NFS="false"
+          if gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a \
+            --command='findmnt -n -o FSTYPE -M /shared 2>/dev/null | grep -Eq "^(ext4|nfs)" || grep -q " /shared ext4 " /etc/fstab' 2>/dev/null; then
+            echo "Detected legacy single-node NFS /shared setup. Scaling down workloads using /shared before cutover..."
+            MIGRATED_FROM_NFS="true"
+            kubectl scale deployment/docker-registry -n docker-registry --replicas=0 2>/dev/null || true
+            sleep 5
+
+            for n in rke2-node-2 rke2-node-3; do
+              gcloud compute ssh $n --tunnel-through-iap --zone=me-west1-a --command='
+                sudo umount -lf /shared 2>/dev/null || true
+                sudo sed -i "\|:/shared|d" /etc/fstab
+                sudo systemctl daemon-reload
+              '
+            done
+
+            gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a --command='
+              sudo systemctl disable --now nfs-server.service 2>/dev/null || true
+              if [ -f /etc/exports ]; then
+                sudo sed -i "\|/shared |d" /etc/exports
+                sudo exportfs -ra 2>/dev/null || true
+              fi
+              sudo umount -lf /shared 2>/dev/null || true
+              sudo sed -i "\| /shared ext4 |d" /etc/fstab
+              sudo systemctl daemon-reload
+            '
+          fi
+
+          for n in rke2-node-1 rke2-node-2 rke2-node-3; do
+            echo "Preparing GlusterFS brick disk (/mnt/shared-brick) and daemon on $n..."
+            gcloud compute ssh $n --tunnel-through-iap --zone=me-west1-a --command='
+              if [ -b "/dev/disk/by-id/google-shared-disk" ]; then
+                if ! sudo blkid /dev/disk/by-id/google-shared-disk | grep -q "TYPE="; then
                   sudo mkfs.ext4 -m 0 -F /dev/disk/by-id/google-shared-disk
                 fi
-                sudo mkdir -p /shared
-                UUID=$(sudo blkid -s UUID -o value /dev/disk/by-id/google-shared-disk)
-                if ! grep -q "UUID=$UUID" /etc/fstab; then
-                  echo "UUID=$UUID /shared ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+                sudo mkdir -p /mnt/shared-brick /shared
+                if ! findmnt -M /mnt/shared-brick >/dev/null 2>&1; then
+                  UUID=$(sudo blkid -s UUID -o value /dev/disk/by-id/google-shared-disk)
+                  if ! grep -q "UUID=$UUID" /etc/fstab; then
+                    echo "UUID=$UUID /mnt/shared-brick ext4 defaults,nofail 0 2" | sudo tee -a /etc/fstab
+                  fi
+                  sudo systemctl daemon-reload && sudo mount /mnt/shared-brick
                 fi
-                sudo systemctl daemon-reload && sudo mount /shared
+                sudo mkdir -p /mnt/shared-brick/brick
+                if ! command -v glusterd >/dev/null 2>&1; then
+                  sudo DEBIAN_FRONTEND=noninteractive apt-get update
+                  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y glusterfs-server rsync
+                fi
+                sudo systemctl enable --now glusterd.service
               fi
-              sudo chmod 777 /shared
-              sudo mkdir -p /shared/docker-registry && sudo chmod 777 /shared/docker-registry
-              sudo apt-get update && sudo apt-get install -y nfs-kernel-server
-              if ! grep -q "/shared " /etc/exports; then
-                echo "/shared 10.10.0.0/24(rw,sync,no_subtree_check,no_root_squash)" | sudo tee -a /etc/exports
-              fi
-              sudo exportfs -ra && sudo systemctl enable --now nfs-server.service
+            '
+          done
+
+          echo "Forming 3-node GlusterFS trusted pool and 'shared-vol' replicated volume..."
+          gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a --command='
+            sudo gluster peer probe 10.10.0.12 || true
+            sudo gluster peer probe 10.10.0.13 || true
+            sleep 5
+            if ! sudo gluster volume info shared-vol >/dev/null 2>&1; then
+              sudo gluster volume create shared-vol replica 3 \
+                10.10.0.11:/mnt/shared-brick/brick \
+                10.10.0.12:/mnt/shared-brick/brick \
+                10.10.0.13:/mnt/shared-brick/brick force
+              sudo gluster volume set shared-vol network.ping-timeout 5
+              sudo gluster volume set shared-vol cluster.quorum-type auto
+              sudo gluster volume start shared-vol
+            elif ! sudo gluster volume info shared-vol | grep -q "Status: Started"; then
+              sudo gluster volume start shared-vol || true
             fi
           '
 
-          for n in rke2-node-2 rke2-node-3; do
+          for n in rke2-node-1 rke2-node-2 rke2-node-3; do
+            echo "Mounting GlusterFS volume 'shared-vol' at /shared on $n..."
             gcloud compute ssh $n --tunnel-through-iap --zone=me-west1-a --command='
-              if ! findmnt -M /shared >/dev/null 2>&1; then
-                sudo apt-get update && sudo apt-get install -y nfs-common
-                sudo mkdir -p /shared
-                if ! grep -q "10.10.0.11:/shared" /etc/fstab; then
-                  echo "10.10.0.11:/shared /shared nfs nfsvers=4.2,rw,_netdev,soft,timeo=100 0 0" | sudo tee -a /etc/fstab
-                fi
+              sudo mkdir -p /shared
+              if ! grep -q "localhost:/shared-vol" /etc/fstab; then
+                echo "localhost:/shared-vol /shared glusterfs defaults,_netdev,backup-volfile-servers=10.10.0.11:10.10.0.12:10.10.0.13,x-systemd.requires=glusterd.service 0 0" | sudo tee -a /etc/fstab
+              fi
+              if ! findmnt -n -o FSTYPE -M /shared 2>/dev/null | grep -q "glusterfs"; then
                 sudo systemctl daemon-reload && sudo mount /shared
               fi
             '
           done
 
-          echo "Checking /shared mount on all nodes:"
+          echo "Migrating any legacy pre-GlusterFS data on rke2-node-1 into replicated /shared..."
+          gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a --command='
+            if findmnt -n -o FSTYPE -M /shared 2>/dev/null | grep -q "glusterfs"; then
+              sudo apt-get install -y rsync >/dev/null 2>&1 || true
+              for item in /mnt/shared-brick/*; do
+                [ -e "$item" ] || continue
+                base=$(basename "$item")
+                if [ "$base" != "brick" ] && [ "$base" != "lost+found" ]; then
+                  echo "Migrating /mnt/shared-brick/$base -> /shared/$base (replicated across all 3 nodes)..."
+                  sudo rsync -aAX "$item" /shared/
+                  sudo rm -rf "$item"
+                fi
+              done
+              sudo chmod 777 /shared
+              sudo mkdir -p /shared/docker-registry && sudo chmod 777 /shared/docker-registry
+            fi
+          '
+
+          if [ "$MIGRATED_FROM_NFS" = "true" ]; then
+            echo "Restoring workloads using /shared after GlusterFS cutover..."
+            kubectl scale deployment/docker-registry -n docker-registry --replicas=1 2>/dev/null || true
+            kubectl rollout restart deployment/docker-registry -n docker-registry 2>/dev/null || true
+          fi
+
+          echo "Checking /shared GlusterFS mount and volume status across all nodes:"
+          gcloud compute ssh rke2-node-1 --tunnel-through-iap --zone=me-west1-a --command='sudo gluster volume status shared-vol' || true
           for n in rke2-node-1 rke2-node-2 rke2-node-3; do
             echo "--- $n /shared ---"
-            gcloud compute ssh $n --tunnel-through-iap --zone=me-west1-a --command='df -h /shared' || true
+            gcloud compute ssh $n --tunnel-through-iap --zone=me-west1-a --command='df -hT /shared' || true
           done
 
           echo "Creating core namespaces..."
