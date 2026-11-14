@@ -124,6 +124,39 @@ jobs:
         if: steps.changes.outputs.run_gcp == 'true' || steps.changes.outputs.run_cloudflare == 'true'
         uses: google-github-actions/setup-gcloud@v3.0.1
 
+      - name: Start Stopped RKE2 VMs (Merge to Main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.changes.outputs.run_gcp == 'true' || steps.changes.outputs.run_cloudflare == 'true')
+        run: |
+          for i in {1..24}; do
+            STOPPING=$(gcloud compute instances list \
+              --filter="name~'^rke2-node-' AND status=STOPPING" \
+              --format="value(name)")
+            if [ -z "$STOPPING" ]; then
+              break
+            fi
+            echo "Waiting for stopping RKE2 VMs to reach TERMINATED (${i}/24): ${STOPPING}"
+            sleep 5
+          done
+
+          STOPPED=$(gcloud compute instances list \
+            --filter="name~'^rke2-node-' AND (status=TERMINATED OR status=SUSPENDED)" \
+            --format="csv[no-heading](name,zone.basename())")
+
+          if [ -z "$STOPPED" ]; then
+            echo "All RKE2 VMs are already running."
+            exit 0
+          fi
+
+          echo "Found stopped RKE2 VMs:"
+          echo "$STOPPED"
+
+          mapfile -t ZONES < <(printf '%s\n' "$STOPPED" | cut -d',' -f2 | sort -u)
+          for ZONE in "${ZONES[@]}"; do
+            mapfile -t ZONE_NAMES < <(printf '%s\n' "$STOPPED" | awk -F',' -v z="$ZONE" '$2 == z {print $1}')
+            echo "Starting RKE2 VMs in zone ${ZONE}: ${ZONE_NAMES[*]}"
+            gcloud compute instances start "${ZONE_NAMES[@]}" --zone="$ZONE" --quiet
+          done
+
       - name: Set up OpenTofu
         if: steps.changes.outputs.run_gcp == 'true' || steps.changes.outputs.run_cloudflare == 'true'
         uses: opentofu/setup-opentofu@v2.0.2
