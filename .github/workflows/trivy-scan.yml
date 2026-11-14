@@ -46,17 +46,19 @@ jobs:
           echo "Running Trivy IaC & Kubernetes manifest misconfiguration scan..."
           trivy config \
             --severity HIGH,CRITICAL \
+            --skip-dirs .git,.github,docs \
             --format sarif \
             --output trivy-config.sarif \
             --exit-code 0 \
-            tofu argocd cert-manager mongodb
+            .
 
           trivy config \
             --severity HIGH,CRITICAL \
+            --skip-dirs .git,.github,docs \
             --format json \
             --output trivy-config.json \
             --exit-code 0 \
-            tofu argocd cert-manager mongodb
+            .
 
           python3 - <<'PY'
           import json
