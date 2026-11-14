@@ -2,7 +2,7 @@
 
 ---
 
-# 5. Deploy MongoDB ReplicaSet (`8.0.13`) & Prometheus Metrics Exporter
+# 5. Deploy MongoDB ReplicaSet (`9.0.8`) & Prometheus Metrics Exporter
 
 - [Overview & Architecture](#overview--architecture)
 - [Resource Requests & Limits Sizing Rationale](#resource-requests--limits-sizing-rationale)
@@ -15,12 +15,12 @@
 
 ## Overview & Architecture
 
-MongoDB is deployed into a dedicated **`mongodb`** namespace via Argo CD ([`argocd/apps/mongodb.yaml`](../argocd/apps/mongodb.yaml)) using the **Bitnami MongoDB Helm Chart** (`version: 16.5.45`, which packages **MongoDB `8.0.13`**) and values defined in [`mongodb/values.yaml`](../mongodb/values.yaml).
+MongoDB is deployed into a dedicated **`mongodb`** namespace via Argo CD ([`argocd/apps/mongodb.yaml`](../argocd/apps/mongodb.yaml)) using the **Bitnami MongoDB Helm Chart** (`version: 20.0.20`, which packages **MongoDB `9.0.8`** and **`mongodb-exporter` `0.54.0`**) and values defined in [`mongodb/values.yaml`](../mongodb/values.yaml).
 
 ### Key Design Choices
 * **ReplicaSet Topology (1 Replica per Node):** Configured with `architecture: replicaset`, `replicaCount: 3`, and `podAntiAffinityPreset: hard`, guaranteeing that `mongodb-0`, `mongodb-1`, and `mongodb-2` are scheduled on separate RKE2 nodes (`rke2-node-1`, `rke2-node-2`, `rke2-node-3`).
 * **No Arbiter & Ephemeral Storage:** `arbiter.enabled: false` (3 data-bearing replicas already form a complete voting quorum) and `persistence.enabled: false` (`emptyDir` storage).
-* **Bitnami Legacy Registry Compatibility:** Because Broadcom/Bitnami migrated pinned non-latest container tags on Docker Hub from `docker.io/bitnami/*` to `docker.io/bitnamilegacy/*`, [`mongodb/values.yaml`](../mongodb/values.yaml) sets `global.security.allowInsecureImages: true`, `image.repository: bitnamilegacy/mongodb` (`8.0.13-debian-12-r0`), and `metrics.image.repository: bitnamilegacy/mongodb-exporter` (`0.47.0-debian-12-r1`).
+* **Actively Patched Bitnami Images:** Chart `20.0.20` pulls the actively maintained `registry-1.docker.io/bitnami/mongodb:latest` (`9.0.8`) and `registry-1.docker.io/bitnami/mongodb-exporter:latest` (`0.54.0`) images directly without requiring `bitnamilegacy/*` overrides or `allowInsecureImages: true`.
 * **GitOps Secret Stability:** Because Bitnami's Helm chart randomly generates `mongodb-root-password` and `mongodb-replica-set-key` when rendered with `helm template`, [`argocd/apps/mongodb.yaml`](../argocd/apps/mongodb.yaml) configures `ignoreDifferences` on `Secret/mongodb` (`/data`) along with `RespectIgnoreDifferences=true` and `ApplyOutOfSyncOnly=true`. This creates the `Secret` automatically on initial deployment and preserves it across all future syncs without storing credentials in Git.
 
 ---
@@ -101,7 +101,7 @@ docker run --rm -it \
    In a second terminal, connect to `127.0.0.1:27017` with `?directConnection=true`:
 
 ```bash
-docker run --rm -it --network host mongo:8.0.13 \
+docker run --rm -it --network host mongo:9.0 \
   mongosh "mongodb://root:${MONGODB_ROOT_PASSWORD}@127.0.0.1:27017/admin?directConnection=true" \
   --eval "rs.status().members.map(m => ({name: m.name, stateStr: m.stateStr, health: m.health}))"
 ```

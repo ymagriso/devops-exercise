@@ -20,7 +20,7 @@ flowchart LR
             Argo["Argo CD (Self-Managed)"]
             CM["cert-manager (Let's Encrypt DNS-01)"]
             SUC["System Upgrade Controller (Rolling Upgrades)"]
-            Mongo["MongoDB 8.0.13 (3-Node ReplicaSet + Metrics)"]
+            Mongo["MongoDB 9.0.8 (3-Node ReplicaSet + Metrics)"]
             Registry["Docker Registry (50 GB 3-Node GlusterFS /shared)"]
             Demo["devops-demo (Node.js App)"]
         end
@@ -46,7 +46,7 @@ flowchart LR
 | **2** | [**GCP Infrastructure & RKE2 Cluster Setup**](docs/02-gcp-rke2-cluster-setup.md) | Automated provisioning with **OpenTofu** & **GitHub Actions** (Dedicated Custom VPC, Cloud NAT, IAP firewalls, fixed node IPs, and automated RKE2 + Cilium bootstrap) alongside manual `gcloud` walkthrough. |
 | **3** | [**`cert-manager` & Let's Encrypt (HTTPS)**](docs/03-cert-manager-letsencrypt.md) | Installing `cert-manager` via Helm and configuring `letsencrypt-staging` and `letsencrypt-prod` `ClusterIssuer` resources using Cloudflare DNS-01. |
 | **4** | [**Argo CD GitOps, Cloudflare Tunnel & Google OIDC**](docs/04-argocd-cloudflare-oidc.md) | Deploying Argo CD, issuing its Let's Encrypt certificate, exposing it via Cloudflare Tunnel (`cloudflared`), bootstrapping the Root App-of-Apps, and enabling Google OIDC login. |
-| **5** | [**MongoDB ReplicaSet (`8.0.13`) & Prometheus Metrics**](docs/05-mongodb-replicaset-and-metrics.md) | Deploying a 3-node Bitnami MongoDB `8.0.13` ReplicaSet via Argo CD with explicit resource limits, Prometheus metrics exporter (`:9216`), and external access via Cloudflare Tunnel (`:27017`). |
+| **5** | [**MongoDB ReplicaSet (`9.0.8`) & Prometheus Metrics**](docs/05-mongodb-replicaset-and-metrics.md) | Deploying a 3-node Bitnami MongoDB `9.0.8` ReplicaSet via Argo CD with explicit resource limits, Prometheus metrics exporter (`:9216`), and external access via Cloudflare Tunnel (`:27017`). |
 | **6** | [**Cluster Operations, Renovate & Cost Management**](docs/06-operations-and-cleanup.md) | Automated Helm, Docker & OpenTofu updates with **Mend Renovate**, **Trivy** container image & IaC vulnerability scanning, zero-downtime rolling RKE2 upgrades via **System Upgrade Controller (SUC)**, automated nightly VM power management (`23:00–06:00`), and single-click teardown. |
 
 ---
@@ -93,7 +93,7 @@ k8s-resources/
 │   ├── values.yaml                                     # Helm values for jetstack/cert-manager
 │   └── cluster-issuers.yaml                            # Let's Encrypt Staging & Prod ClusterIssuers (DNS-01)
 ├── mongodb/
-│   └── values.yaml                                     # Helm values for bitnami/mongodb (8.0.13 ReplicaSet + Metrics)
+│   └── values.yaml                                     # Helm values for bitnami/mongodb (9.0.8 ReplicaSet + Metrics)
 └── argocd/
     ├── values.yaml                                     # Helm values for argo/argo-cd (Google OIDC enabled)
     ├── certificate.yaml                                # Let's Encrypt Certificate for argocd-server-tls

@@ -1,16 +1,5 @@
-# Helm values for bitnami/mongodb (Chart 16.5.45 / MongoDB 8.0.13)
+# Helm values for bitnami/mongodb (Chart 20.0.20 / MongoDB 9.0.8)
 # Managed via Argo CD (argocd/apps/mongodb.yaml)
-
-global:
-  security:
-    # Bitnami migrated non-latest tags on Docker Hub to docker.io/bitnamilegacy/*
-    allowInsecureImages: true
-
-image:
-  registry: docker.io
-  repository: bitnamilegacy/mongodb
-  tag: 8.0.13-debian-12-r0
-  pullPolicy: IfNotPresent
 
 # 3-Node ReplicaSet architecture (1 replica scheduled on each of the 3 RKE2 nodes)
 architecture: replicaset
@@ -42,11 +31,6 @@ resources:
 # Prometheus Metrics Exporter sidecar (port 9216/TCP, Service: mongodb-metrics)
 metrics:
   enabled: true
-  image:
-    registry: docker.io
-    repository: bitnamilegacy/mongodb-exporter
-    tag: 0.47.0-debian-12-r1
-    pullPolicy: IfNotPresent
   resources:
     requests:
       cpu: 50m

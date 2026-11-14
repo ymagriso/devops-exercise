@@ -41,8 +41,8 @@ This repository uses the [**Mend Renovate**](https://developer.mend.io) GitHub A
 | **`custom.regex` (RKE2)** | `/^tofu/variables\.tf$/`<br>`/^argocd/apps/workloads/rke2-upgrade-plans/.+\.ya?ml$/` | • `rancher/rke2` GitHub releases (synchronized across both OpenTofu variable defaults and runtime SUC `Plan` CRDs) |
 | **`custom.regex` (SUC)** | `/^argocd/apps/workloads/system-upgrade-controller/kustomization\.ya?ml$/` | • `rancher/system-upgrade-controller` GitHub releases |
 | **`argocd`** | `/^argocd/(apps\|bootstrap)/[^/]+\.ya?ml$/` | • `argo-cd` Helm chart in [`argocd/apps/argocd.yaml`](../argocd/apps/argocd.yaml)<br>• `cert-manager` Helm chart in [`argocd/apps/cert-manager.yaml`](../argocd/apps/cert-manager.yaml)<br>• `mongodb` OCI Helm chart in [`argocd/apps/mongodb.yaml`](../argocd/apps/mongodb.yaml) |
-| **`kubernetes`** | `/^argocd/apps/workloads/.+\.ya?ml$/` | • `cloudflare/cloudflared` image in [`argocd/apps/workloads/cloudflared/deployment.yaml`](../argocd/apps/workloads/cloudflared/deployment.yaml) |
-| **`helm-values`** | `/(^\|/)values\.ya?ml$/` | • `bitnamilegacy/mongodb` & `bitnamilegacy/mongodb-exporter` images in [`mongodb/values.yaml`](../mongodb/values.yaml) |
+| **`kubernetes`** | `/^argocd/apps/workloads/.+\.ya?ml$/` | • `cloudflare/cloudflared` image in [`argocd/apps/workloads/cloudflared/deployment.yaml`](../argocd/apps/workloads/cloudflared/deployment.yaml)<br>• `registry` image in [`argocd/apps/workloads/docker-registry/deployment.yaml`](../argocd/apps/workloads/docker-registry/deployment.yaml) |
+| **`helm-values`** | `/(^\|/)values\.ya?ml$/` | • Any container image overrides defined in Helm `values.yaml` files |
 | **`github-actions`** | `.github/workflows/*.ya?ml` | • GitHub Actions action versions (`setup-opentofu`, `auth`, `setup-gcloud`) |
 
 ### Cooldown (`minimumReleaseAge`) & Rate-Limiting Strategy
@@ -51,7 +51,6 @@ To protect the GitOps cluster against supply-chain compromises and unstable "Day
 * **3-Day Default Cooldown (`"minimumReleaseAge": "3 days"`):** Patch and minor Helm chart, RKE2, or Docker image updates must soak upstream for at least 3 days before Renovate opens a PR.
 * **7-Day Major Release Cooldown (`matchUpdateTypes: ["major"]`):** Major version upgrades require a 7-day cooldown window to allow early upstream hotfixes (`.1` / `.2`) to settle.
 * **One Minor Version at a Time for Kubernetes (`separateMultipleMinor: true`):** Kubernetes only supports sequential minor version upgrades ($1.35 \rightarrow 1.36 \rightarrow 1.37$). Renovate is configured with `separateMultipleMinor: true` for `rancher/rke2` to ensure a dedicated PR is opened per minor series rather than skipping minor releases.
-* **Pinned Major Series for MongoDB (`registry-1.docker.io/bitnamicharts/mongodb`):** Major chart updates (`17.x+`, which target MongoDB `8.2`/`9.0` and `:latest` tags) are disabled (`enabled: false`) so the chart remains aligned with the pinned MongoDB `8.0.13` (`16.x`) release.
 * **PR Rate Limits (`prHourlyLimit: 2`, `prConcurrentLimit: 5`):** Prevents PR spam while automatically tagging PRs with `rke2`, `opentofu`, `helm`, `docker`, and `dependencies` labels.
 
 ---
