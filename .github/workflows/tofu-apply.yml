@@ -37,15 +37,23 @@ permissions:
   contents: read
   id-token: write
 
+# Workflow-level concurrency: deduplicate rapid duplicate pull_request events
+# for the same PR (e.g., when a stacked rebase updates both base and head refs),
+# while never canceling non-PR (push / workflow_dispatch) runs.
 concurrency:
-  group: opentofu-infra
-  cancel-in-progress: false
-  queue: max
+  group: ${{ github.event_name == 'pull_request' && format('opentofu-pr-{0}', github.event.pull_request.number) || format('opentofu-main-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   tofu:
     name: "OpenTofu Plan/Apply & Bootstrap"
     runs-on: ubuntu-latest
+    # Job-level concurrency: serialize all OpenTofu state operations across PRs
+    # and main in a single FIFO queue (up to 100 pending runs) without canceling.
+    concurrency:
+      group: opentofu-infra
+      cancel-in-progress: false
+      queue: max
     env:
       ACTION: ${{ github.event_name == 'pull_request' && 'plan' || github.event.inputs.action || 'apply' }}
       TF_IN_AUTOMATION: "1"
