@@ -37,13 +37,6 @@ resource "google_compute_disk" "rke2_var_disk" {
   }
 }
 
-# State migration: preserve existing rke2-shared-disk on rke2-node-1 as index [0]
-# when upgrading from single-node NFS to 3-node replicated GlusterFS.
-moved {
-  from = google_compute_disk.rke2_shared_disk
-  to   = google_compute_disk.rke2_shared_disk[0]
-}
-
 # Dedicated 50GB persistent disks on each node backing the 3-way replicated GlusterFS /shared volume
 resource "google_compute_disk" "rke2_shared_disk" {
   count = var.node_count
