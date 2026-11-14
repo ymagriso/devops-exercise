@@ -46,7 +46,7 @@ jobs:
           echo "Running Trivy IaC & Kubernetes manifest misconfiguration scan..."
           trivy config \
             --severity HIGH,CRITICAL \
-            --skip-dirs .git,.github,docs \
+            --skip-dirs .git,.github,docs,.terraform \
             --format sarif \
             --output trivy-config.sarif \
             --exit-code 0 \
@@ -54,7 +54,7 @@ jobs:
 
           trivy config \
             --severity HIGH,CRITICAL \
-            --skip-dirs .git,.github,docs \
+            --skip-dirs .git,.github,docs,.terraform \
             --format json \
             --output trivy-config.json \
             --exit-code 0 \
@@ -63,6 +63,13 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+
+          skip_dirs = {".git", ".github", "docs", ".terraform"}
+          scanned_dirs = sorted(
+              f"`{d}/`"
+              for d in os.listdir(".")
+              if os.path.isdir(d) and d not in skip_dirs and not d.startswith(".")
+          )
 
           with open("trivy-config.json", encoding="utf-8") as f:
               data = json.load(f)
@@ -84,7 +91,7 @@ jobs:
 
           lines = [
               "## 🛡️ Trivy IaC & Kubernetes Manifest Scan (`trivy config`)\n\n",
-              "- **Scanned paths:** `tofu/`, `argocd/`, `cert-manager/`, `mongodb/`\n",
+              f"- **Scanned directories:** {', '.join(scanned_dirs) or '`.`'} (`{len(results)}` config targets evaluated)\n",
               f"- **Findings (`CRITICAL` / `HIGH`):** `{crit_count}` Critical, `{high_count}` High\n\n",
           ]
           if findings:
@@ -124,134 +131,44 @@ jobs:
           REGISTRY_PASS: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
         run: |
           python3 - <<'PY'
+          import base64
           import json
           import os
           import re
           import subprocess
-          import urllib.request
+          import tempfile
           import urllib.error
-          import base64
+          import urllib.request
           import yaml
 
-          images = {}  # image_ref -> set of sources
+          SKIP_DIRS = {".git", ".github", "docs", ".terraform"}
+          KUSTOMIZE_NAMES = {"kustomization.yaml", "kustomization.yml", "Kustomization"}
 
-          def add_image(img: str, source: str):
-              img = img.strip().strip('"').strip("'")
-              if not img or "{{" in img or "$" in img:
-                  return
-              images.setdefault(img, set()).add(source)
-
-          def extract_images_from_docs(docs, source_label: str):
-              for doc in docs:
-                  if not isinstance(doc, dict):
-                      continue
-                  kind = doc.get("kind", "")
-                  spec = doc.get("spec") or {}
-                  # Rancher System Upgrade Controller Plan CRD
-                  if kind == "Plan" and str(doc.get("apiVersion", "")).startswith("upgrade.cattle.io/"):
-                      version = str(spec.get("version", "")).strip()
-                      # SUC converts '+' in version to '-' for the image tag
-                      tag = version.replace("+", "-") if version else "latest"
-                      for field in ("upgrade", "prepare"):
-                          blk = spec.get(field) or {}
-                          img_repo = blk.get("image")
-                          if img_repo:
-                              add_image(f"{img_repo}:{tag}" if ":" not in img_repo else img_repo, source_label)
-                      continue
-
-                  # Standard Kubernetes Pod / Workload specs
-                  def walk(obj):
-                      if isinstance(obj, dict):
-                          for k, v in obj.items():
-                              if k == "image" and isinstance(v, str):
-                                  add_image(v, source_label)
-                              else:
-                                  walk(v)
-                      elif isinstance(obj, list):
-                          for item in obj:
-                              walk(item)
-                  walk(spec)
-
-          # 1. Static manifests in argocd/apps/workloads (excluding kustomization.yaml)
-          for root, _, files in os.walk("argocd/apps/workloads"):
-              for fname in sorted(files):
-                  if not fname.endswith((".yaml", ".yml")) or fname == "kustomization.yaml":
-                      continue
-                  fpath = os.path.join(root, fname)
-                  with open(fpath, encoding="utf-8") as f:
-                      docs = list(yaml.safe_load_all(f))
-                  extract_images_from_docs(docs, fpath)
-
-          # 2. Kustomize overlay in argocd/apps/workloads/system-upgrade-controller
-          kust_dir = "argocd/apps/workloads/system-upgrade-controller"
-          if os.path.isdir(kust_dir):
-              rendered = subprocess.check_output(["kubectl", "kustomize", kust_dir], text=True)
-              extract_images_from_docs(list(yaml.safe_load_all(rendered)), f"kustomize:{kust_dir}")
-
-          # 3. Helm charts defined in argocd/apps/*.yaml
-          helm_repos_added = False
-          for fname in sorted(os.listdir("argocd/apps")):
-              if not fname.endswith((".yaml", ".yml")):
-                  continue
-              fpath = os.path.join("argocd/apps", fname)
-              with open(fpath, encoding="utf-8") as f:
-                  app = yaml.safe_load(f)
-              if not isinstance(app, dict) or app.get("kind") != "Application":
-                  continue
-              sources = (app.get("spec") or {}).get("sources") or []
-              for src in sources:
-                  chart = src.get("chart")
-                  repo_url = src.get("repoURL", "")
-                  rev = str(src.get("targetRevision", ""))
-                  if not chart or not repo_url:
-                      continue
-                  helm_cfg = src.get("helm") or {}
-                  release_name = helm_cfg.get("releaseName", chart)
-                  value_files = [
-                      vf.replace("$values/", "")
-                      for vf in (helm_cfg.get("valueFiles") or [])
-                  ]
-                  cmd = ["helm", "template", release_name]
-                  if repo_url.startswith("https://"):
-                      cmd.extend([chart, "--repo", repo_url, "--version", rev])
-                  else:
-                      oci_url = repo_url if repo_url.startswith("oci://") else f"oci://{repo_url}"
-                      cmd.extend([f"{oci_url}/{chart}", "--version", rev])
-                  for vf in value_files:
-                      if os.path.exists(vf):
-                          cmd.extend(["-f", vf])
-                  print(f"Rendering Helm chart for {fpath}: {' '.join(cmd)}")
-                  rendered = subprocess.check_output(cmd, text=True)
-                  extract_images_from_docs(
-                      list(yaml.safe_load_all(rendered)),
-                      f"helm:{chart}@{rev}",
-                  )
-
-          # 4. Private Docker Registry (registry.<CUSTOM_DOMAIN>)
+          # 1. Check Private Docker Registry connectivity first
           domain = os.environ.get("CUSTOM_DOMAIN", "").strip()
           reg_user = os.environ.get("REGISTRY_USER", "admin").strip()
           reg_pass = os.environ.get("REGISTRY_PASS", "").strip()
           private_registry_status = "Not configured (CUSTOM_DOMAIN secret unset)"
+          private_registry_reachable = False
+          reg_host = f"registry.{domain}" if domain else ""
+          basic_token = ""
 
           if domain:
-              reg_host = f"registry.{domain}"
-              # Check if cluster / private registry is currently online
               ping_url = f"https://{reg_host}/v2/"
               req = urllib.request.Request(ping_url, method="GET")
               if reg_user and reg_pass:
-                  token = base64.b64encode(f"{reg_user}:{reg_pass}".encode()).decode()
-                  req.add_header("Authorization", f"Basic {token}")
+                  basic_token = base64.b64encode(f"{reg_user}:{reg_pass}".encode()).decode()
+                  req.add_header("Authorization", f"Basic {basic_token}")
               try:
                   with urllib.request.urlopen(req, timeout=10) as resp:
-                      code = resp.getcode()
-                  reachable = code in (200, 401)
+                      private_registry_reachable = resp.getcode() in (200, 401)
               except urllib.error.HTTPError as e:
-                  reachable = e.code in (200, 401)
-              except Exception as e:
-                  reachable = False
+                  private_registry_reachable = e.code in (200, 401)
+              except Exception:
+                  private_registry_reachable = False
                   private_registry_status = f"Offline / unreachable (`{reg_host}` — cluster VMs likely stopped)"
 
-              if reachable:
+              if private_registry_reachable:
                   private_registry_status = f"Online (`{reg_host}`)"
                   if reg_user and reg_pass:
                       subprocess.run(
@@ -260,50 +177,290 @@ jobs:
                           text=True,
                           check=False,
                       )
-                  # Check devops-demo.yaml image reference
-                  demo_path = "argocd/apps/devops-demo.yaml"
-                  if os.path.exists(demo_path):
-                      with open(demo_path, encoding="utf-8") as f:
-                          demo_raw = f.read().replace("yourdomain.com", domain)
-                      demo_doc = yaml.safe_load(demo_raw)
-                      img_obj = (((demo_doc.get("spec") or {}).get("source") or {}).get("helm") or {}).get("valuesObject", {}).get("image") or {}
-                      if img_obj.get("repository") and img_obj.get("tag"):
-                          add_image(f"{img_obj['repository']}:{img_obj['tag']}", demo_path)
+                      subprocess.run(
+                          ["helm", "registry", "login", reg_host, "-u", reg_user, "--password-stdin"],
+                          input=reg_pass,
+                          text=True,
+                          check=False,
+                      )
 
-                  # Also query /v2/_catalog for any other container images in private registry
-                  try:
-                      cat_req = urllib.request.Request(f"https://{reg_host}/v2/_catalog")
-                      if reg_user and reg_pass:
-                          cat_req.add_header("Authorization", f"Basic {token}")
-                      with urllib.request.urlopen(cat_req, timeout=10) as resp:
-                          repos = json.loads(resp.read().decode()).get("repositories") or []
-                      for repo in repos:
-                          # Skip OCI Helm chart repositories stored under charts/*
-                          if repo.startswith("charts/"):
-                              continue
-                          tags_req = urllib.request.Request(f"https://{reg_host}/v2/{repo}/tags/list")
-                          if reg_user and reg_pass:
-                              tags_req.add_header("Authorization", f"Basic {token}")
-                          with urllib.request.urlopen(tags_req, timeout=10) as tresp:
-                              tags = json.loads(tresp.read().decode()).get("tags") or []
-                          for tag in tags:
-                              add_image(f"{reg_host}/{repo}:{tag}", f"private-registry:{reg_host}")
-                  except Exception as exc:
-                      print(f"Warning: catalog lookup on {reg_host} failed: {exc}")
+          def is_offline_private_ref(ref: str) -> bool:
+              clean = re.sub(r"^[a-zA-Z0-9+.-]+://", "", ref.strip())
+              if clean.startswith("registry.yourdomain.com"):
+                  return True
+              if reg_host and clean.startswith(reg_host) and not private_registry_reachable:
+                  return True
+              return False
+
+          images = {}  # image_ref -> set of sources
+          skipped_private = {}  # image_ref -> set of sources
+
+          def add_image(img: str, source: str):
+              img = img.strip().strip('"').strip("'")
+              if not img or "{{" in img or "$" in img:
+                  return
+              if domain:
+                  img = img.replace("yourdomain.com", domain)
+              if is_offline_private_ref(img):
+                  skipped_private.setdefault(img, set()).add(source)
+                  return
+              images.setdefault(img, set()).add(source)
+
+          def extract_images_from_docs(docs, source_label: str, include_dict_images: bool = False):
+              for doc in docs:
+                  if not isinstance(doc, dict):
+                      continue
+                  kind = doc.get("kind", "")
+                  api_version = str(doc.get("apiVersion", ""))
+                  spec = doc.get("spec") or {}
+
+                  # Skip kubeconfig files
+                  if kind == "Config" and api_version == "v1" and "clusters" in doc and "contexts" in doc:
+                      continue
+
+                  # Rancher System Upgrade Controller Plan CRD
+                  if kind == "Plan" and api_version.startswith("upgrade.cattle.io/"):
+                      version = str(spec.get("version", "")).strip()
+                      tag = version.replace("+", "-") if version else "latest"
+                      for field in ("upgrade", "prepare"):
+                          blk = spec.get(field) or {}
+                          img_repo = blk.get("image")
+                          if isinstance(img_repo, str) and img_repo:
+                              add_image(f"{img_repo}:{tag}" if ":" not in img_repo else img_repo, source_label)
+                      continue
+
+                  def walk(obj):
+                      if isinstance(obj, dict):
+                          for k, v in obj.items():
+                              if k == "image" and isinstance(v, str):
+                                  add_image(v, source_label)
+                              elif k == "image" and isinstance(v, dict) and include_dict_images:
+                                  repo = v.get("repository")
+                                  tag = v.get("tag") or v.get("version")
+                                  reg = v.get("registry")
+                                  if isinstance(repo, str) and repo:
+                                      full_repo = f"{reg.rstrip('/')}/{repo.lstrip('/')}" if isinstance(reg, str) and reg else repo
+                                      full_img = f"{full_repo}:{tag}" if tag and ":" not in full_repo else full_repo
+                                      add_image(full_img, source_label)
+                              else:
+                                  walk(v)
+                      elif isinstance(obj, list):
+                          for item in obj:
+                              walk(item)
+
+                  walk(spec if spec else doc)
+
+          # Walk the entire repository dynamically (no hardcoded workload paths)
+          kustomize_dirs = []
+          helm_chart_dirs = []
+          yaml_files = []
+
+          for root, dirs, files in os.walk("."):
+              dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not d.startswith("."))
+              norm_root = os.path.normpath(root)
+              file_set = set(files)
+              if file_set & KUSTOMIZE_NAMES:
+                  kustomize_dirs.append(norm_root)
+              if "Chart.yaml" in file_set:
+                  helm_chart_dirs.append(norm_root)
+              for fname in sorted(files):
+                  if fname.endswith((".yaml", ".yml")) and fname not in KUSTOMIZE_NAMES and fname != "Chart.yaml":
+                      yaml_files.append(os.path.normpath(os.path.join(root, fname)))
+
+          # 2. Render all Kustomize overlays found anywhere in the repository
+          for kust_dir in sorted(kustomize_dirs):
+              print(f"Rendering Kustomize directory: {kust_dir}", flush=True)
+              rendered = subprocess.check_output(["kubectl", "kustomize", kust_dir], text=True)
+              extract_images_from_docs(list(yaml.safe_load_all(rendered)), f"kustomize:{kust_dir}")
+
+          # 3. Render all Argo CD Applications & ApplicationSets found anywhere in the repository
+          consumed_value_files = set()
+          rendered_local_charts = set()
+
+          for fpath in yaml_files:
+              with open(fpath, encoding="utf-8") as f:
+                  raw_text = f.read()
+              if domain:
+                  raw_text = raw_text.replace("yourdomain.com", domain)
+              try:
+                  docs = list(yaml.safe_load_all(raw_text))
+              except Exception:
+                  continue
+
+              for doc in docs:
+                  if not isinstance(doc, dict):
+                      continue
+                  if not str(doc.get("apiVersion", "")).startswith("argoproj.io/"):
+                      continue
+                  if doc.get("kind") not in ("Application", "ApplicationSet"):
+                      continue
+
+                  spec = doc.get("spec") or {}
+                  tmpl_spec = ((spec.get("template") or {}).get("spec")) or {}
+                  sources = []
+                  for s_holder in (spec, tmpl_spec):
+                      if isinstance(s_holder.get("source"), dict):
+                          sources.append(s_holder["source"])
+                      if isinstance(s_holder.get("sources"), list):
+                          sources.extend(s for s in s_holder["sources"] if isinstance(s, dict))
+
+                  ref_map = {"values": "."}
+                  for src in sources:
+                      if src.get("ref"):
+                          ref_map[src["ref"]] = src.get("path", ".")
+
+                  for src in sources:
+                      chart = src.get("chart")
+                      repo_url = (src.get("repoURL") or "").strip()
+                      rev = str(src.get("targetRevision") or "").strip()
+                      local_path = (src.get("path") or "").strip()
+                      helm_cfg = src.get("helm") or {}
+
+                      # Extract any inline images from valuesObject / values even if chart repo is offline
+                      if isinstance(helm_cfg.get("valuesObject"), dict):
+                          extract_images_from_docs([helm_cfg["valuesObject"]], fpath, include_dict_images=True)
+                      if isinstance(helm_cfg.get("values"), str) and helm_cfg["values"].strip():
+                          try:
+                              extract_images_from_docs(list(yaml.safe_load_all(helm_cfg["values"])), fpath, include_dict_images=True)
+                          except Exception:
+                              pass
+
+                      is_local_chart = bool(local_path and os.path.exists(os.path.join(local_path, "Chart.yaml")))
+                      if not chart and not is_local_chart:
+                          continue
+
+                      if repo_url and is_offline_private_ref(repo_url):
+                          print(f"Skipping offline private registry Helm chart in {fpath}: {repo_url}/{chart}", flush=True)
+                          continue
+
+                      release_name = helm_cfg.get("releaseName") or chart or os.path.basename(local_path)
+                      cmd = ["helm", "template", release_name]
+                      if is_local_chart:
+                          cmd.append(local_path)
+                          rendered_local_charts.add(os.path.normpath(local_path))
+                          label = f"helm:{local_path}"
+                      elif repo_url.startswith(("http://", "https://")):
+                          cmd.extend([chart, "--repo", repo_url])
+                          if rev:
+                              cmd.extend(["--version", rev])
+                          label = f"helm:{chart}@{rev}"
+                      else:
+                          oci_url = repo_url if repo_url.startswith("oci://") else f"oci://{repo_url}"
+                          cmd.append(f"{oci_url.rstrip('/')}/{chart}")
+                          if rev:
+                              cmd.extend(["--version", rev])
+                          label = f"helm:{chart}@{rev}"
+
+                      for vf in helm_cfg.get("valueFiles") or []:
+                          resolved_vf = vf
+                          for rname, rpath in ref_map.items():
+                              prefix = f"${rname}/"
+                              if resolved_vf.startswith(prefix):
+                                  resolved_vf = os.path.normpath(os.path.join(rpath, resolved_vf[len(prefix):]))
+                          if os.path.exists(resolved_vf):
+                              consumed_value_files.add(os.path.normpath(resolved_vf))
+                              cmd.extend(["-f", resolved_vf])
+
+                      temp_files = []
+                      try:
+                          if isinstance(helm_cfg.get("valuesObject"), dict) and helm_cfg["valuesObject"]:
+                              tf = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8")
+                              yaml.safe_dump(helm_cfg["valuesObject"], tf)
+                              tf.close()
+                              temp_files.append(tf.name)
+                              cmd.extend(["-f", tf.name])
+                          if isinstance(helm_cfg.get("values"), str) and helm_cfg["values"].strip():
+                              tf = tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8")
+                              tf.write(helm_cfg["values"])
+                              tf.close()
+                              temp_files.append(tf.name)
+                              cmd.extend(["-f", tf.name])
+                          for param in helm_cfg.get("parameters") or []:
+                              if isinstance(param, dict) and param.get("name") and "value" in param:
+                                  cmd.extend(["--set", f"{param['name']}={param['value']}"])
+
+                          print(f"Rendering Helm chart for {fpath}: {' '.join(cmd)}", flush=True)
+                          rendered = subprocess.check_output(cmd, text=True)
+                          extract_images_from_docs(list(yaml.safe_load_all(rendered)), label)
+                      finally:
+                          for tf_name in temp_files:
+                              if os.path.exists(tf_name):
+                                  os.remove(tf_name)
+
+          # 4. Render any standalone local Helm charts (Chart.yaml) not already rendered via Argo CD
+          for chart_dir in sorted(helm_chart_dirs):
+              if chart_dir in rendered_local_charts:
+                  continue
+              print(f"Rendering standalone local Helm chart: {chart_dir}", flush=True)
+              rendered = subprocess.check_output(["helm", "template", os.path.basename(chart_dir), chart_dir], text=True)
+              extract_images_from_docs(list(yaml.safe_load_all(rendered)), f"helm:{chart_dir}")
+
+          # 5. Scan all remaining YAML manifests across the repository
+          for fpath in yaml_files:
+              if fpath in consumed_value_files:
+                  continue
+              with open(fpath, encoding="utf-8") as f:
+                  raw_text = f.read()
+              if domain:
+                  raw_text = raw_text.replace("yourdomain.com", domain)
+              try:
+                  docs = list(yaml.safe_load_all(raw_text))
+              except Exception:
+                  continue
+              other_docs = [
+                  d for d in docs
+                  if isinstance(d, dict)
+                  and not (str(d.get("apiVersion", "")).startswith("argoproj.io/") and d.get("kind") in ("Application", "ApplicationSet"))
+              ]
+              if other_docs:
+                  extract_images_from_docs(other_docs, fpath)
+
+          # 6. Query /v2/_catalog for any other container images in Private Docker Registry when online
+          if private_registry_reachable and reg_host:
+              try:
+                  cat_req = urllib.request.Request(f"https://{reg_host}/v2/_catalog")
+                  if basic_token:
+                      cat_req.add_header("Authorization", f"Basic {basic_token}")
+                  with urllib.request.urlopen(cat_req, timeout=10) as resp:
+                      repos = json.loads(resp.read().decode()).get("repositories") or []
+                  for repo in repos:
+                      if repo.startswith("charts/"):
+                          continue
+                      tags_req = urllib.request.Request(f"https://{reg_host}/v2/{repo}/tags/list")
+                      if basic_token:
+                          tags_req.add_header("Authorization", f"Basic {basic_token}")
+                      with urllib.request.urlopen(tags_req, timeout=10) as tresp:
+                          tags = json.loads(tresp.read().decode()).get("tags") or []
+                      for tag in tags:
+                          add_image(f"{reg_host}/{repo}:{tag}", f"private-registry:{reg_host}")
+              except Exception as exc:
+                  print(f"Warning: catalog lookup on {reg_host} failed: {exc}", flush=True)
 
           image_list = [
               {"image": img, "sources": sorted(srcs)}
               for img, srcs in sorted(images.items())
           ]
+          skipped_list = [
+              {"image": img, "sources": sorted(srcs)}
+              for img, srcs in sorted(skipped_private.items())
+          ]
           with open("discovered-images.json", "w", encoding="utf-8") as f:
               json.dump(
-                  {"private_registry_status": private_registry_status, "images": image_list},
+                  {
+                      "private_registry_status": private_registry_status,
+                      "images": image_list,
+                      "skipped_private": skipped_list,
+                  },
                   f,
                   indent=2,
               )
-          print(f"Discovered {len(image_list)} unique container images.")
+          print(f"Discovered {len(image_list)} unique scan-ready container images.", flush=True)
           for item in image_list:
-              print(f" - {item['image']} ({', '.join(item['sources'])})")
+              print(f" - {item['image']} ({', '.join(item['sources'])})", flush=True)
+          if skipped_list:
+              print(f"Skipped {len(skipped_list)} offline/unconfigured private-registry images:", flush=True)
+              for item in skipped_list:
+                  print(f" - {item['image']} ({', '.join(item['sources'])})", flush=True)
           PY
 
       - name: Scan Container Images with Trivy
@@ -318,6 +475,7 @@ jobs:
               meta = json.load(f)
 
           image_list = meta["images"]
+          skipped_list = meta.get("skipped_private") or []
           priv_status = meta["private_registry_status"]
 
           summary_rows = []
@@ -406,6 +564,11 @@ jobs:
                       lines.append(f"\n*...and {len(vulns_list) - 40} more findings.*\n")
                   lines.append("\n</details>\n")
                   details_blocks.append("".join(lines))
+
+          for item in skipped_list:
+              s_img = item["image"]
+              s_sources = ", ".join(f"`{s}`" for s in item["sources"])
+              summary_rows.append((s_img, s_sources, "-", "-", "-", "⏭️ Skipped (Private Registry Offline)"))
 
           out_lines = [
               "## 📦 Trivy Container Image Vulnerability Scan (`trivy image`)\n\n",

@@ -86,16 +86,17 @@ Before selecting GitHub Actions as the execution environment, three architectura
 The workflow ([`.github/workflows/trivy-scan.yml`](../.github/workflows/trivy-scan.yml)) runs on every `pull_request`, `push` to `main`, daily at `10:00` (`Asia/Jerusalem`, when the cluster VMs are typically awake during daytime work), and via manual `workflow_dispatch`:
 
 1. **IaC & Kubernetes Manifest Scan (`trivy config`):**
-   * Scans `tofu/`, `argocd/`, `cert-manager/`, and `mongodb/` for `HIGH` and `CRITICAL` security misconfigurations.
-   * Renders a Markdown summary table into the GitHub Actions Job Summary (`$GITHUB_STEP_SUMMARY`).
-2. **Multi-Source Container Image Discovery:**
-   * **Static Workloads (`argocd/apps/workloads/**`):** Extracts images such as `cloudflare/cloudflared`, `registry`, and resolves `rancher/rke2-upgrade:<version>` from the System Upgrade Controller `Plan` CRDs.
-   * **Kustomize Overlays:** Runs `kubectl kustomize argocd/apps/workloads/system-upgrade-controller` to extract the pinned `rancher/system-upgrade-controller` image.
-   * **Helm Charts (`argocd/apps/*.yaml`):** Parses the `Application` manifests for `argocd`, `cert-manager`, and `mongodb`, runs `helm template` with each component's `values.yaml`, and extracts all rendered container images (`quay.io/argoproj/argocd`, `ecr-public.aws.com/docker/library/redis`, `quay.io/jetstack/cert-manager-*`, `bitnamilegacy/mongodb`, `bitnamilegacy/mongodb-exporter`).
-   * **Private Docker Registry (`registry.<CUSTOM_DOMAIN>`):** Pings `https://registry.<CUSTOM_DOMAIN>/v2/`. When the RKE2 cluster is online, it authenticates with `DOCKER_REGISTRY_USERNAME` / `DOCKER_REGISTRY_PASSWORD`, resolves `argocd/apps/devops-demo.yaml`, and queries `/v2/_catalog` (excluding `charts/*` OCI Helm chart artifacts) to scan all private container images. If the cluster VMs are stopped (e.g., during the `23:00–06:00` nightly shutdown window), it records that the private registry is offline and skips private images without failing the workflow.
+   * Dynamically scans the entire repository (`.`, skipping `.git`, `.github`, `docs`, and `.terraform`) for `HIGH` and `CRITICAL` security misconfigurations across all OpenTofu modules and Kubernetes manifests — requiring zero workflow edits when new directories or workloads are added.
+   * Renders a Markdown summary table into both the job logs and the GitHub Actions Job Summary (`$GITHUB_STEP_SUMMARY`).
+2. **Generic Repository-Wide Container Image Discovery:**
+   * Walks the entire repository dynamically with **no hardcoded directory or workload paths**:
+   * **Kustomize Overlays:** Automatically detects any directory containing `kustomization.yaml` / `kustomization.yml` / `Kustomization`, renders it with `kubectl kustomize`, and extracts all container images.
+   * **Argo CD `Application` & `ApplicationSet` Manifests:** Automatically detects any `argoproj.io` `Application` or `ApplicationSet` anywhere in the repo (supporting both single-source `spec.source` and multi-source `spec.sources`, HTTP and OCI Helm repositories, local charts, `$ref/` value file mappings, inline `valuesObject` / `values`, and `parameters`), runs `helm template`, and extracts all rendered images.
+   * **Standalone Helm Charts (`Chart.yaml`) & Raw Kubernetes Manifests:** Renders any standalone local `Chart.yaml` directories and parses all remaining YAML manifests across the repository (including standard Pod/Deployment/StatefulSet/DaemonSet/Job/CronJob specs and Rancher System Upgrade Controller `Plan` CRDs).
+   * **Private Docker Registry (`registry.<CUSTOM_DOMAIN>`):** Pings `https://registry.<CUSTOM_DOMAIN>/v2/`. When the RKE2 cluster is online, it logs in via both `docker login` and `helm registry login` (allowing private OCI Helm charts such as `devops-demo` to render) and queries `/v2/_catalog` to scan all container images stored in the private registry. If the cluster VMs are stopped (e.g., during the `23:00–06:00` nightly shutdown window), it gracefully marks private-registry charts/images as skipped without failing the workflow.
 3. **Container Image Vulnerability Scan (`trivy image`):**
-   * Scans every discovered image for `HIGH` and `CRITICAL` OS and library CVEs (`--pkg-types os,library --scanners vuln`).
-   * Publishes an overview table (`Critical`, `High`, `Fixable`, `Status`) and expandable `<details>` CVE breakdowns per image to the GitHub Actions Job Summary.
+   * Scans every discovered image for `HIGH` and `CRITICAL` OS and library CVEs (`--scanners vuln`).
+   * Publishes an overview table (`Critical`, `High`, `Fixable`, `Status`) and expandable `<details>` CVE breakdowns per image to both the job logs and the GitHub Actions Job Summary.
 
 ### Interaction with CodeQL Merge Protection & Enabling PR Blocking
 
