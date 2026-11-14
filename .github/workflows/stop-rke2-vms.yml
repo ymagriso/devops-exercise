@@ -1,0 +1,108 @@
+name: "RKE2 VMs Power Management"
+
+on:
+  schedule:
+    - cron: "0 23,0-6 * * *"
+      timezone: "Asia/Jerusalem"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Power action to perform on RKE2 VMs"
+        required: true
+        default: "stop"
+        type: choice
+        options:
+          - stop
+          - start
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: opentofu-infra
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  power:
+    name: "Manage RKE2 VMs Power State"
+    runs-on: ubuntu-latest
+    env:
+      ACTION: ${{ github.event.inputs.action || 'stop' }}
+
+    steps:
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_CI_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3.0.1
+
+      - name: Stop Running RKE2 VMs
+        if: env.ACTION == 'stop'
+        run: |
+          for i in {1..24}; do
+            TRANSITIONING=$(gcloud compute instances list \
+              --filter="name~'^rke2-node-' AND (status=PROVISIONING OR status=STAGING)" \
+              --format="value(name)")
+            if [ -z "$TRANSITIONING" ]; then
+              break
+            fi
+            echo "Waiting for starting RKE2 VMs to reach RUNNING (${i}/24): ${TRANSITIONING}"
+            sleep 5
+          done
+
+          RUNNING=$(gcloud compute instances list \
+            --filter="name~'^rke2-node-' AND status=RUNNING" \
+            --format="csv[no-heading](name,zone.basename())")
+
+          if [ -z "$RUNNING" ]; then
+            echo "No running RKE2 VMs found. Nothing to do."
+            exit 0
+          fi
+
+          echo "Found running RKE2 VMs:"
+          echo "$RUNNING"
+
+          mapfile -t ZONES < <(printf '%s\n' "$RUNNING" | cut -d',' -f2 | sort -u)
+          for ZONE in "${ZONES[@]}"; do
+            mapfile -t ZONE_NAMES < <(printf '%s\n' "$RUNNING" | awk -F',' -v z="$ZONE" '$2 == z {print $1}')
+            echo "Stopping RKE2 VMs in zone ${ZONE}: ${ZONE_NAMES[*]}"
+            gcloud compute instances stop "${ZONE_NAMES[@]}" --zone="$ZONE" --quiet
+          done
+
+      - name: Start Stopped RKE2 VMs
+        if: env.ACTION == 'start'
+        run: |
+          for i in {1..24}; do
+            STOPPING=$(gcloud compute instances list \
+              --filter="name~'^rke2-node-' AND status=STOPPING" \
+              --format="value(name)")
+            if [ -z "$STOPPING" ]; then
+              break
+            fi
+            echo "Waiting for stopping RKE2 VMs to reach TERMINATED (${i}/24): ${STOPPING}"
+            sleep 5
+          done
+
+          STOPPED=$(gcloud compute instances list \
+            --filter="name~'^rke2-node-' AND (status=TERMINATED OR status=SUSPENDED)" \
+            --format="csv[no-heading](name,zone.basename())")
+
+          if [ -z "$STOPPED" ]; then
+            echo "All RKE2 VMs are already running."
+            exit 0
+          fi
+
+          echo "Found stopped RKE2 VMs:"
+          echo "$STOPPED"
+
+          mapfile -t ZONES < <(printf '%s\n' "$STOPPED" | cut -d',' -f2 | sort -u)
+          for ZONE in "${ZONES[@]}"; do
+            mapfile -t ZONE_NAMES < <(printf '%s\n' "$STOPPED" | awk -F',' -v z="$ZONE" '$2 == z {print $1}')
+            echo "Starting RKE2 VMs in zone ${ZONE}: ${ZONE_NAMES[*]}"
+            gcloud compute instances start "${ZONE_NAMES[@]}" --zone="$ZONE" --quiet
+          done
