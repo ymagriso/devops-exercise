@@ -1,0 +1,431 @@
+name: "Trivy Security Scan (Images & IaC)"
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    # Run daily at 10:00 Israel time (when cluster VMs are typically awake during daytime work)
+    - cron: "0 10 * * *"
+      timezone: "Asia/Jerusalem"
+  workflow_dispatch:
+    inputs:
+      fail_on_critical:
+        description: "Fail the workflow if fixable CRITICAL vulnerabilities or misconfigurations are found"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('trivy-pr-{0}', github.event.pull_request.number) || format('trivy-main-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  trivy-scan:
+    name: "Trivy IaC & Container Image Scan"
+    runs-on: ubuntu-latest
+    env:
+      FAIL_ON_CRITICAL: ${{ github.event.inputs.fail_on_critical || 'false' }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          cache: true
+
+      - name: Scan OpenTofu & Kubernetes Manifests (trivy config)
+        run: |
+          echo "Running Trivy IaC & Kubernetes manifest misconfiguration scan..."
+          trivy config \
+            --severity HIGH,CRITICAL \
+            --format sarif \
+            --output trivy-config.sarif \
+            --exit-code 0 \
+            tofu argocd cert-manager mongodb
+
+          trivy config \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output trivy-config.json \
+            --exit-code 0 \
+            tofu argocd cert-manager mongodb
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          with open("trivy-config.json", encoding="utf-8") as f:
+              data = json.load(f)
+
+          results = data.get("Results") or []
+          findings = []
+          crit_count = 0
+          high_count = 0
+
+          for res in results:
+              target = res.get("Target", "")
+              for m in res.get("Misconfigurations") or []:
+                  sev = m.get("Severity", "UNKNOWN")
+                  if sev == "CRITICAL":
+                      crit_count += 1
+                  elif sev == "HIGH":
+                      high_count += 1
+                  findings.append((sev, target, m.get("ID", ""), m.get("Title", "")))
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("## 🛡️ Trivy IaC & Kubernetes Manifest Scan (`trivy config`)\n\n")
+              out.write(f"- **Scanned paths:** `tofu/`, `argocd/`, `cert-manager/`, `mongodb/`\n")
+              out.write(f"- **Findings (`CRITICAL` / `HIGH`):** `{crit_count}` Critical, `{high_count}` High\n\n")
+              if findings:
+                  out.write("| Severity | Target | Rule ID | Title |\n")
+                  out.write("| :--- | :--- | :--- | :--- |\n")
+                  for sev, target, rid, title in findings[:50]:
+                      safe_title = title.replace("|", "\\|")
+                      out.write(f"| **{sev}** | `{target}` | `{rid}` | {safe_title} |\n")
+                  out.write("\n")
+              else:
+                  out.write("> ✅ No `HIGH` or `CRITICAL` IaC misconfigurations detected.\n\n")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as gh_out:
+              gh_out.write(f"config_critical={crit_count}\n")
+          PY
+        id: config_scan
+
+      - name: Upload IaC Scan SARIF to GitHub Security Tab
+        # Upload SARIF on main/schedule/workflow_dispatch so PRs stay non-blocking
+        # while CodeQL merge protection is active.
+        if: github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@v4.39.3
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-iac-config
+
+      - name: Discover Container Images (Manifests, Kustomize, Helm & Private Registry)
+        id: discover
+        env:
+          CUSTOM_DOMAIN: ${{ secrets.CUSTOM_DOMAIN }}
+          REGISTRY_USER: ${{ secrets.DOCKER_REGISTRY_USERNAME || 'admin' }}
+          REGISTRY_PASS: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import urllib.request
+          import urllib.error
+          import base64
+          import yaml
+
+          images = {}  # image_ref -> set of sources
+
+          def add_image(img: str, source: str):
+              img = img.strip().strip('"').strip("'")
+              if not img or "{{" in img or "$" in img:
+                  return
+              images.setdefault(img, set()).add(source)
+
+          def extract_images_from_docs(docs, source_label: str):
+              for doc in docs:
+                  if not isinstance(doc, dict):
+                      continue
+                  kind = doc.get("kind", "")
+                  spec = doc.get("spec") or {}
+                  # Rancher System Upgrade Controller Plan CRD
+                  if kind == "Plan" and str(doc.get("apiVersion", "")).startswith("upgrade.cattle.io/"):
+                      version = str(spec.get("version", "")).strip()
+                      # SUC converts '+' in version to '-' for the image tag
+                      tag = version.replace("+", "-") if version else "latest"
+                      for field in ("upgrade", "prepare"):
+                          blk = spec.get(field) or {}
+                          img_repo = blk.get("image")
+                          if img_repo:
+                              add_image(f"{img_repo}:{tag}" if ":" not in img_repo else img_repo, source_label)
+                      continue
+
+                  # Standard Kubernetes Pod / Workload specs
+                  def walk(obj):
+                      if isinstance(obj, dict):
+                          for k, v in obj.items():
+                              if k == "image" and isinstance(v, str):
+                                  add_image(v, source_label)
+                              else:
+                                  walk(v)
+                      elif isinstance(obj, list):
+                          for item in obj:
+                              walk(item)
+                  walk(spec)
+
+          # 1. Static manifests in argocd/apps/workloads (excluding kustomization.yaml)
+          for root, _, files in os.walk("argocd/apps/workloads"):
+              for fname in sorted(files):
+                  if not fname.endswith((".yaml", ".yml")) or fname == "kustomization.yaml":
+                      continue
+                  fpath = os.path.join(root, fname)
+                  with open(fpath, encoding="utf-8") as f:
+                      docs = list(yaml.safe_load_all(f))
+                  extract_images_from_docs(docs, fpath)
+
+          # 2. Kustomize overlay in argocd/apps/workloads/system-upgrade-controller
+          kust_dir = "argocd/apps/workloads/system-upgrade-controller"
+          if os.path.isdir(kust_dir):
+              rendered = subprocess.check_output(["kubectl", "kustomize", kust_dir], text=True)
+              extract_images_from_docs(list(yaml.safe_load_all(rendered)), f"kustomize:{kust_dir}")
+
+          # 3. Helm charts defined in argocd/apps/*.yaml
+          helm_repos_added = False
+          for fname in sorted(os.listdir("argocd/apps")):
+              if not fname.endswith((".yaml", ".yml")):
+                  continue
+              fpath = os.path.join("argocd/apps", fname)
+              with open(fpath, encoding="utf-8") as f:
+                  app = yaml.safe_load(f)
+              if not isinstance(app, dict) or app.get("kind") != "Application":
+                  continue
+              sources = (app.get("spec") or {}).get("sources") or []
+              for src in sources:
+                  chart = src.get("chart")
+                  repo_url = src.get("repoURL", "")
+                  rev = str(src.get("targetRevision", ""))
+                  if not chart or not repo_url:
+                      continue
+                  helm_cfg = src.get("helm") or {}
+                  release_name = helm_cfg.get("releaseName", chart)
+                  value_files = [
+                      vf.replace("$values/", "")
+                      for vf in (helm_cfg.get("valueFiles") or [])
+                  ]
+                  cmd = ["helm", "template", release_name]
+                  if repo_url.startswith("https://"):
+                      cmd.extend([chart, "--repo", repo_url, "--version", rev])
+                  else:
+                      oci_url = repo_url if repo_url.startswith("oci://") else f"oci://{repo_url}"
+                      cmd.extend([f"{oci_url}/{chart}", "--version", rev])
+                  for vf in value_files:
+                      if os.path.exists(vf):
+                          cmd.extend(["-f", vf])
+                  print(f"Rendering Helm chart for {fpath}: {' '.join(cmd)}")
+                  rendered = subprocess.check_output(cmd, text=True)
+                  extract_images_from_docs(
+                      list(yaml.safe_load_all(rendered)),
+                      f"helm:{chart}@{rev}",
+                  )
+
+          # 4. Private Docker Registry (registry.<CUSTOM_DOMAIN>)
+          domain = os.environ.get("CUSTOM_DOMAIN", "").strip()
+          reg_user = os.environ.get("REGISTRY_USER", "admin").strip()
+          reg_pass = os.environ.get("REGISTRY_PASS", "").strip()
+          private_registry_status = "Not configured (CUSTOM_DOMAIN secret unset)"
+
+          if domain:
+              reg_host = f"registry.{domain}"
+              # Check if cluster / private registry is currently online
+              ping_url = f"https://{reg_host}/v2/"
+              req = urllib.request.Request(ping_url, method="GET")
+              if reg_user and reg_pass:
+                  token = base64.b64encode(f"{reg_user}:{reg_pass}".encode()).decode()
+                  req.add_header("Authorization", f"Basic {token}")
+              try:
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      code = resp.getcode()
+                  reachable = code in (200, 401)
+              except urllib.error.HTTPError as e:
+                  reachable = e.code in (200, 401)
+              except Exception as e:
+                  reachable = False
+                  private_registry_status = f"Offline / unreachable (`{reg_host}` — cluster VMs likely stopped)"
+
+              if reachable:
+                  private_registry_status = f"Online (`{reg_host}`)"
+                  if reg_user and reg_pass:
+                      subprocess.run(
+                          ["docker", "login", reg_host, "-u", reg_user, "--password-stdin"],
+                          input=reg_pass,
+                          text=True,
+                          check=False,
+                      )
+                  # Check devops-demo.yaml image reference
+                  demo_path = "argocd/apps/devops-demo.yaml"
+                  if os.path.exists(demo_path):
+                      with open(demo_path, encoding="utf-8") as f:
+                          demo_raw = f.read().replace("yourdomain.com", domain)
+                      demo_doc = yaml.safe_load(demo_raw)
+                      img_obj = (((demo_doc.get("spec") or {}).get("source") or {}).get("helm") or {}).get("valuesObject", {}).get("image") or {}
+                      if img_obj.get("repository") and img_obj.get("tag"):
+                          add_image(f"{img_obj['repository']}:{img_obj['tag']}", demo_path)
+
+                  # Also query /v2/_catalog for any other container images in private registry
+                  try:
+                      cat_req = urllib.request.Request(f"https://{reg_host}/v2/_catalog")
+                      if reg_user and reg_pass:
+                          cat_req.add_header("Authorization", f"Basic {token}")
+                      with urllib.request.urlopen(cat_req, timeout=10) as resp:
+                          repos = json.loads(resp.read().decode()).get("repositories") or []
+                      for repo in repos:
+                          # Skip OCI Helm chart repositories stored under charts/*
+                          if repo.startswith("charts/"):
+                              continue
+                          tags_req = urllib.request.Request(f"https://{reg_host}/v2/{repo}/tags/list")
+                          if reg_user and reg_pass:
+                              tags_req.add_header("Authorization", f"Basic {token}")
+                          with urllib.request.urlopen(tags_req, timeout=10) as tresp:
+                              tags = json.loads(tresp.read().decode()).get("tags") or []
+                          for tag in tags:
+                              add_image(f"{reg_host}/{repo}:{tag}", f"private-registry:{reg_host}")
+                  except Exception as exc:
+                      print(f"Warning: catalog lookup on {reg_host} failed: {exc}")
+
+          image_list = [
+              {"image": img, "sources": sorted(srcs)}
+              for img, srcs in sorted(images.items())
+          ]
+          with open("discovered-images.json", "w", encoding="utf-8") as f:
+              json.dump(
+                  {"private_registry_status": private_registry_status, "images": image_list},
+                  f,
+                  indent=2,
+              )
+          print(f"Discovered {len(image_list)} unique container images.")
+          for item in image_list:
+              print(f" - {item['image']} ({', '.join(item['sources'])})")
+          PY
+
+      - name: Scan Container Images with Trivy
+        id: image_scan
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          with open("discovered-images.json", encoding="utf-8") as f:
+              meta = json.load(f)
+
+          image_list = meta["images"]
+          priv_status = meta["private_registry_status"]
+
+          summary_rows = []
+          details_blocks = []
+          total_crit = 0
+          total_high = 0
+          total_fixable_crit = 0
+
+          for idx, item in enumerate(image_list, 1):
+              img = item["image"]
+              sources = ", ".join(f"`{s}`" for s in item["sources"])
+              out_file = f"trivy-image-{idx}.json"
+              print(f"[{idx}/{len(image_list)}] Scanning image: {img}")
+
+              proc = subprocess.run(
+                  [
+                      "trivy",
+                      "image",
+                      "--scanners",
+                      "vuln",
+                      "--pkg-types",
+                      "os,library",
+                      "--severity",
+                      "HIGH,CRITICAL",
+                      "--format",
+                      "json",
+                      "--output",
+                      out_file,
+                      "--exit-code",
+                      "0",
+                      img,
+                  ],
+                  capture_output=True,
+                  text=True,
+              )
+
+              if proc.returncode != 0 or not os.path.exists(out_file):
+                  summary_rows.append((img, sources, "-", "-", "-", "⚠️ Scan/Pull Failed"))
+                  continue
+
+              with open(out_file, encoding="utf-8") as rf:
+                  report = json.load(rf)
+
+              crit = 0
+              high = 0
+              fixable = 0
+              vulns_list = []
+
+              for res in report.get("Results") or []:
+                  for v in res.get("Vulnerabilities") or []:
+                      sev = v.get("Severity", "")
+                      fixed_ver = v.get("FixedVersion", "")
+                      if sev == "CRITICAL":
+                          crit += 1
+                          total_crit += 1
+                          if fixed_ver:
+                              total_fixable_crit += 1
+                      elif sev == "HIGH":
+                          high += 1
+                          total_high += 1
+                      if fixed_ver:
+                          fixable += 1
+                      vulns_list.append(
+                          (
+                              sev,
+                              v.get("VulnerabilityID", ""),
+                              v.get("PkgName", ""),
+                              v.get("InstalledVersion", ""),
+                              fixed_ver or "*(unfixed)*",
+                              (v.get("Title") or "").replace("|", "\\|")[:80],
+                          )
+                      )
+
+              status = "✅ Clean" if (crit == 0 and high == 0) else ("🔴 Critical" if crit > 0 else "🟠 High")
+              summary_rows.append((img, sources, str(crit), str(high), str(fixable), status))
+
+              if vulns_list:
+                  vulns_list.sort(key=lambda x: (0 if x[0] == "CRITICAL" else 1, x[1]))
+                  lines = [
+                      f"<details><summary><b>{img}</b> — {crit} Critical, {high} High ({fixable} fixable)</summary>\n\n",
+                      "| Severity | CVE | Package | Installed | Fixed Version | Title |\n",
+                      "| :--- | :--- | :--- | :--- | :--- | :--- |\n",
+                  ]
+                  for sev, cve, pkg, inst, fixv, title in vulns_list[:40]:
+                      lines.append(f"| **{sev}** | `{cve}` | `{pkg}` | `{inst}` | `{fixv}` | {title} |\n")
+                  if len(vulns_list) > 40:
+                      lines.append(f"\n*...and {len(vulns_list) - 40} more findings.*\n")
+                  lines.append("\n</details>\n")
+                  details_blocks.append("".join(lines))
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("## 📦 Trivy Container Image Vulnerability Scan (`trivy image`)\n\n")
+              out.write(f"- **Images scanned:** `{len(image_list)}`\n")
+              out.write(f"- **Private Docker Registry:** {priv_status}\n")
+              out.write(f"- **Total findings:** `{total_crit}` Critical (`{total_fixable_crit}` fixable), `{total_high}` High\n\n")
+              out.write("| Image | Source(s) | Critical | High | Fixable | Status |\n")
+              out.write("| :--- | :--- | :---: | :---: | :---: | :--- |\n")
+              for img, sources, c, h, fx, st in summary_rows:
+                  out.write(f"| `{img}` | {sources} | {c} | {h} | {fx} | {st} |\n")
+              out.write("\n")
+              if details_blocks:
+                  out.write("### 🔍 Per-Image Vulnerability Details\n\n")
+                  for blk in details_blocks:
+                      out.write(blk)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as gh_out:
+              gh_out.write(f"fixable_critical={total_fixable_crit}\n")
+          PY
+
+      - name: Enforce Critical Threshold (Optional Gate)
+        if: env.FAIL_ON_CRITICAL == 'true'
+        env:
+          CONFIG_CRITICAL: ${{ steps.config_scan.outputs.config_critical }}
+          IMAGE_FIXABLE_CRITICAL: ${{ steps.image_scan.outputs.fixable_critical }}
+        run: |
+          if [ "${CONFIG_CRITICAL:-0}" -gt 0 ] || [ "${IMAGE_FIXABLE_CRITICAL:-0}" -gt 0 ]; then
+            echo "::error::Failing scan because FAIL_ON_CRITICAL=true (IaC critical=${CONFIG_CRITICAL}, fixable image critical=${IMAGE_FIXABLE_CRITICAL})."
+            exit 1
+          fi
