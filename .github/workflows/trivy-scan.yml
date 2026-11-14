@@ -155,15 +155,24 @@ jobs:
 
           if domain:
               ping_url = f"https://{reg_host}/v2/"
-              req = urllib.request.Request(ping_url, method="GET")
+              req = urllib.request.Request(
+                  ping_url,
+                  method="GET",
+                  headers={"User-Agent": "Docker-Client/27.0.0 (linux)"},
+              )
               if reg_user and reg_pass:
                   basic_token = base64.b64encode(f"{reg_user}:{reg_pass}".encode()).decode()
                   req.add_header("Authorization", f"Basic {basic_token}")
               try:
                   with urllib.request.urlopen(req, timeout=10) as resp:
-                      private_registry_reachable = resp.getcode() in (200, 401)
+                      code = resp.getcode()
+                  private_registry_reachable = code in (200, 401)
+                  if not private_registry_reachable:
+                      private_registry_status = f"Offline / unreachable (`{reg_host}` — HTTP {code})"
               except urllib.error.HTTPError as e:
                   private_registry_reachable = e.code in (200, 401)
+                  if not private_registry_reachable:
+                      private_registry_status = f"Offline / unreachable (`{reg_host}` — HTTP {e.code})"
               except Exception:
                   private_registry_reachable = False
                   private_registry_status = f"Offline / unreachable (`{reg_host}` — cluster VMs likely stopped)"
@@ -418,7 +427,10 @@ jobs:
           # 6. Query /v2/_catalog for any other container images in Private Docker Registry when online
           if private_registry_reachable and reg_host:
               try:
-                  cat_req = urllib.request.Request(f"https://{reg_host}/v2/_catalog")
+                  cat_req = urllib.request.Request(
+                      f"https://{reg_host}/v2/_catalog",
+                      headers={"User-Agent": "Docker-Client/27.0.0 (linux)"},
+                  )
                   if basic_token:
                       cat_req.add_header("Authorization", f"Basic {basic_token}")
                   with urllib.request.urlopen(cat_req, timeout=10) as resp:
@@ -426,7 +438,10 @@ jobs:
                   for repo in repos:
                       if repo.startswith("charts/"):
                           continue
-                      tags_req = urllib.request.Request(f"https://{reg_host}/v2/{repo}/tags/list")
+                      tags_req = urllib.request.Request(
+                          f"https://{reg_host}/v2/{repo}/tags/list",
+                          headers={"User-Agent": "Docker-Client/27.0.0 (linux)"},
+                      )
                       if basic_token:
                           tags_req.add_header("Authorization", f"Basic {basic_token}")
                       with urllib.request.urlopen(tags_req, timeout=10) as tresp:
