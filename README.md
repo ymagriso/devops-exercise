@@ -21,7 +21,7 @@ flowchart LR
             CM["cert-manager (Let's Encrypt DNS-01)"]
             SUC["System Upgrade Controller (Rolling Upgrades)"]
             Mongo["MongoDB 8.0.13 (3-Node ReplicaSet + Metrics)"]
-            Registry["Docker Registry (50 GB Shared /shared Disk)"]
+            Registry["Docker Registry (50 GB 3-Node GlusterFS /shared)"]
             Demo["devops-demo (Node.js App)"]
         end
     end

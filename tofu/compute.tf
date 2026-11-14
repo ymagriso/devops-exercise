@@ -114,6 +114,7 @@ resource "google_compute_instance" "rke2_node" {
       node_name    = "rke2-node-${count.index + 1}"
       node_ip      = cidrhost(var.subnet_cidr, 11 + count.index)
       init_node_ip = cidrhost(var.subnet_cidr, 11)
+      all_node_ips = [for idx in range(var.node_count) : cidrhost(var.subnet_cidr, 11 + idx)]
       subnet_cidr  = var.subnet_cidr
       token        = random_password.rke2_token.result
       rke2_version = var.rke2_version
