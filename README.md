@@ -47,7 +47,7 @@ flowchart LR
 | **3** | [**`cert-manager` & Let's Encrypt (HTTPS)**](docs/03-cert-manager-letsencrypt.md) | Installing `cert-manager` via Helm and configuring `letsencrypt-staging` and `letsencrypt-prod` `ClusterIssuer` resources using Cloudflare DNS-01. |
 | **4** | [**Argo CD GitOps, Cloudflare Tunnel & Google OIDC**](docs/04-argocd-cloudflare-oidc.md) | Deploying Argo CD, issuing its Let's Encrypt certificate, exposing it via Cloudflare Tunnel (`cloudflared`), bootstrapping the Root App-of-Apps, and enabling Google OIDC login. |
 | **5** | [**MongoDB ReplicaSet (`8.0.13`) & Prometheus Metrics**](docs/05-mongodb-replicaset-and-metrics.md) | Deploying a 3-node Bitnami MongoDB `8.0.13` ReplicaSet via Argo CD with explicit resource limits, Prometheus metrics exporter (`:9216`), and external access via Cloudflare Tunnel (`:27017`). |
-| **6** | [**Cluster Operations, Renovate & Cost Management**](docs/06-operations-and-cleanup.md) | Automated Helm, Docker & OpenTofu updates with **Mend Renovate** (with 3-day/7-day cooldown), zero-downtime rolling RKE2 upgrades via **System Upgrade Controller (SUC)**, stopping/starting cluster VMs to conserve credits, and automated single-click teardown. |
+| **6** | [**Cluster Operations, Renovate & Cost Management**](docs/06-operations-and-cleanup.md) | Automated Helm, Docker & OpenTofu updates with **Mend Renovate**, **Trivy** container image & IaC vulnerability scanning, zero-downtime rolling RKE2 upgrades via **System Upgrade Controller (SUC)**, automated nightly VM power management (`23:00–06:00`), and single-click teardown. |
 
 ---
 
@@ -59,8 +59,10 @@ k8s-resources/
 ├── renovate.json                                       # Mend Renovate configuration (Helm, K8s, Docker & OpenTofu rules)
 ├── .github/
 │   └── workflows/
-│       ├── tofu-apply.yml                              # OpenTofu plan/apply (GCP + Cloudflare Tunnel) & cluster bootstrap
-│       └── tofu-destroy.yml                            # OpenTofu safe teardown (requires "DESTROY" input)
+│       ├── tofu-apply.yml                              # OpenTofu plan/apply (GCP + Cloudflare Tunnel), VM auto-start & cluster bootstrap
+│       ├── tofu-destroy.yml                            # OpenTofu safe teardown (requires "DESTROY" input)
+│       ├── stop-rke2-vms.yml                           # Scheduled nightly VM stop (23:00–06:00 Asia/Jerusalem) & on-demand start/stop
+│       └── trivy-scan.yml                              # Trivy container image (Manifests, Kustomize, Helm, Private Registry) & IaC scan
 ├── tofu/                                               # Declarative GCP Infrastructure as Code
 │   ├── versions.tf                                     # OpenTofu & Google/Random provider constraints
 │   ├── providers.tf                                    # Provider configuration

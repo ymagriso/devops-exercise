@@ -7,14 +7,21 @@
 - [Automated Dependency Updates with Mend Renovate](#automated-dependency-updates-with-mend-renovate)
   - [Tracked Managers & Files](#tracked-managers--files)
   - [Cooldown (`minimumReleaseAge`) & Rate-Limiting Strategy](#cooldown-minimumreleaseage--rate-limiting-strategy)
+- [Container Image & IaC Vulnerability Scanning (Trivy)](#container-image--iac-vulnerability-scanning-trivy)
+  - [Execution Approaches Compared](#execution-approaches-compared)
+  - [Scanner Alternatives Compared](#scanner-alternatives-compared)
+  - [How the Trivy Workflow Operates](#how-the-trivy-workflow-operates)
+  - [Interaction with CodeQL Merge Protection & Enabling PR Blocking](#interaction-with-codeql-merge-protection--enabling-pr-blocking)
 - [Automated In-Place RKE2 Upgrades (System Upgrade Controller)](#automated-in-place-rke2-upgrades-system-upgrade-controller)
   - [Architecture & Rolling Upgrade Workflow](#architecture--rolling-upgrade-workflow)
   - [Renovate Coordination & Single-Minor Upgrade Guard](#renovate-coordination--single-minor-upgrade-guard)
   - [OpenTofu In-Place VM Metadata & Safety Guardrail](#opentofu-in-place-vm-metadata--safety-guardrail)
 - [TLS Certificate Persistence & ACME Rate-Limit Protection](#tls-certificate-persistence--acme-rate-limit-protection)
-- [Stop the Instances (Cost Conservation)](#stop-the-instances-cost-conservation)
-- [Start the Instances](#start-the-instances)
-- [Check Instance Status](#check-instance-status)
+- [Automated & Manual Instance Power Management (Cost Conservation)](#automated--manual-instance-power-management-cost-conservation)
+  - [Nightly Auto-Shutdown & On-Demand Workflow](#nightly-auto-shutdown--on-demand-workflow)
+  - [Stop the Instances via CLI](#stop-the-instances-via-cli)
+  - [Start the Instances via CLI](#start-the-instances-via-cli)
+  - [Check Instance Status](#check-instance-status)
 - [Delete the Cluster (Full Cleanup)](#delete-the-cluster-full-cleanup)
   - [Method A: Automated Teardown via GitHub Actions (Recommended)](#method-a-automated-teardown-via-github-actions-recommended)
   - [Method B: Teardown via OpenTofu CLI](#method-b-teardown-via-opentofu-cli)
@@ -46,6 +53,61 @@ To protect the GitOps cluster against supply-chain compromises and unstable "Day
 * **One Minor Version at a Time for Kubernetes (`separateMultipleMinor: true`):** Kubernetes only supports sequential minor version upgrades ($1.35 \rightarrow 1.36 \rightarrow 1.37$). Renovate is configured with `separateMultipleMinor: true` for `rancher/rke2` to ensure a dedicated PR is opened per minor series rather than skipping minor releases.
 * **Pinned Major Series for MongoDB (`registry-1.docker.io/bitnamicharts/mongodb`):** Major chart updates (`17.x+`, which target MongoDB `8.2`/`9.0` and `:latest` tags) are disabled (`enabled: false`) so the chart remains aligned with the pinned MongoDB `8.0.13` (`16.x`) release.
 * **PR Rate Limits (`prHourlyLimit: 2`, `prConcurrentLimit: 5`):** Prevents PR spam while automatically tagging PRs with `rke2`, `opentofu`, `helm`, `docker`, and `dependencies` labels.
+
+---
+
+## Container Image & IaC Vulnerability Scanning (Trivy)
+
+This repository uses [**Aqua Security Trivy**](https://trivy.dev/) in [`.github/workflows/trivy-scan.yml`](../.github/workflows/trivy-scan.yml) to scan both **container images** (across static Kubernetes manifests, Kustomize overlays, rendered Helm charts, and the internal private Docker Registry) and **Infrastructure-as-Code (IaC)** declarations (`tofu/`, `argocd/`, `cert-manager/`, `mongodb/`).
+
+### Execution Approaches Compared
+
+Before selecting GitHub Actions as the execution environment, three architectural approaches were evaluated against the constraints of this 3-node (`e2-standard-2`, 8 GB RAM) cluster:
+
+| Dimension | Option A: GitHub Actions Workflow *(Selected)* | Option B: In-Cluster `trivy-operator` (Argo CD) | Option C: App Build Pipeline (`sample-nodejs` CI) |
+| :--- | :--- | :--- | :--- |
+| **Detection Stage** | **Shift-Left (Pre-Merge):** Scans Renovate and manual PRs *before* they merge to `main`, plus daily scheduled runs | **Runtime (Post-Deploy):** Scans pods only *after* they are deployed in the cluster | **Build Time:** Scans first-party application images before `docker push` |
+| **RKE2 Node RAM / CPU Impact** | **Zero (`0 MB`)** — runs entirely on GitHub-hosted runners | **High (~500 MB–1.5 GB RAM spikes)** per scan job when unpacking image layers + etcd storage for `VulnerabilityReport` CRDs | **Zero (`0 MB`)** — runs on GitHub-hosted runners |
+| **Works During Nightly VM Shutdown (`23:00–06:00`)?** | **Yes** for all public, Kustomize, and Helm images; gracefully skips private registry when cluster is powered off | **No** — requires VMs running and triggers a scan storm when VMs boot up | **Yes** for builds; requires cluster online to push to `registry.<domain>` |
+| **Third-Party Helm & Infra Coverage** | **Full** (`argo-cd`, `cert-manager`, `mongodb`, `cloudflared`, `registry`, `rke2-upgrade`, `SUC`) | **Full** (including `kube-system` pods) | **None** (only scans first-party app code) |
+| **Visibility & UI** | Native GitHub PR Job Summaries & **Security → Code scanning** (SARIF) | Requires `kubectl get vulnerabilityreports` or deploying an additional dashboard | App repository PR checks |
+
+### Scanner Alternatives Compared
+
+| Tool | Maintainer | Capabilities | Pros vs. Trivy | Cons vs. Trivy |
+| :--- | :--- | :--- | :--- | :--- |
+| **Trivy** *(Selected)* | Aqua Security (CNCF) | Container images (OS + language packages), K8s YAML, Helm charts, OpenTofu (`.tf`), Secrets, SBOMs | **Single unified scanner** covering both container CVEs and OpenTofu/Kubernetes misconfigurations; native SARIF output | ~60 MB vulnerability DB download (cached via `aquasecurity/setup-trivy`) |
+| **Grype + Syft** | Anchore | Container images & filesystems (SBOM + CVEs) | Fast scanning and clean SBOM separation | **Does not scan OpenTofu (`.tf`) or Kubernetes YAML misconfigurations** |
+| **Kubescape** | ARMO (CNCF) | Kubernetes posture (NSA/CISA, CIS) + image scanning | Strong Kubernetes RBAC/posture compliance rules | Focused on K8s posture rather than standalone OpenTofu + container CVE scanning |
+| **Docker Scout / Snyk** | Docker / Snyk | Container images & dependencies | Polished SaaS UI | Requires external SaaS accounts/tokens with strict free-tier repository/scan limits |
+
+### How the Trivy Workflow Operates
+
+The workflow ([`.github/workflows/trivy-scan.yml`](../.github/workflows/trivy-scan.yml)) runs on every `pull_request`, `push` to `main`, daily at `10:00` (`Asia/Jerusalem`, when the cluster VMs are typically awake during daytime work), and via manual `workflow_dispatch`:
+
+1. **IaC & Kubernetes Manifest Scan (`trivy config`):**
+   * Dynamically scans the entire repository (`.`, skipping `.git`, `.github`, `docs`, and `.terraform`) for `HIGH` and `CRITICAL` security misconfigurations across all OpenTofu modules and Kubernetes manifests — requiring zero workflow edits when new directories or workloads are added.
+   * Renders a Markdown summary table into both the job logs and the GitHub Actions Job Summary (`$GITHUB_STEP_SUMMARY`).
+2. **Generic Repository-Wide Container Image Discovery:**
+   * Walks the entire repository dynamically with **no hardcoded directory or workload paths**:
+   * **Kustomize Overlays:** Automatically detects any directory containing `kustomization.yaml` / `kustomization.yml` / `Kustomization`, renders it with `kubectl kustomize`, and extracts all container images.
+   * **Argo CD `Application` & `ApplicationSet` Manifests:** Automatically detects any `argoproj.io` `Application` or `ApplicationSet` anywhere in the repo (supporting both single-source `spec.source` and multi-source `spec.sources`, HTTP and OCI Helm repositories, local charts, `$ref/` value file mappings, inline `valuesObject` / `values`, and `parameters`), runs `helm template`, and extracts all rendered images.
+   * **Standalone Helm Charts (`Chart.yaml`) & Raw Kubernetes Manifests:** Renders any standalone local `Chart.yaml` directories and parses all remaining YAML manifests across the repository (including standard Pod/Deployment/StatefulSet/DaemonSet/Job/CronJob specs and Rancher System Upgrade Controller `Plan` CRDs).
+   * **Private Docker Registry (`registry.<CUSTOM_DOMAIN>`):** Pings `https://registry.<CUSTOM_DOMAIN>/v2/`. When the RKE2 cluster is online, it logs in via both `docker login` and `helm registry login` (allowing private OCI Helm charts such as `devops-demo` to render) and queries `/v2/_catalog` to scan all container images stored in the private registry. If the cluster VMs are stopped (e.g., during the `23:00–06:00` nightly shutdown window), it gracefully marks private-registry charts/images as skipped without failing the workflow.
+3. **Container Image Vulnerability Scan (`trivy image`):**
+   * Scans every discovered image for `HIGH` and `CRITICAL` OS and library CVEs (`--scanners vuln`).
+   * Publishes an overview table (`Critical`, `High`, `Fixable`, `Status`) and expandable `<details>` CVE breakdowns per image to both the job logs and the GitHub Actions Job Summary.
+
+### Interaction with CodeQL Merge Protection & Enabling PR Blocking
+
+Because **GitHub Code Scanning (CodeQL)** is enabled on this repository and configured to block PRs on security errors:
+* Uploading a SARIF file (`github/codeql-action/upload-sarif`) during a `pull_request` run feeds third-party findings into the **same Code Scanning merge protection gate**, which can block PRs due to unfixed upstream base-image CVEs.
+* **Default Report-Only Mode (Current):**
+  * On `pull_request` events, Trivy runs with `--exit-code 0` and writes full Markdown tables to the **GitHub Actions Job Summary** without uploading SARIF, guaranteeing PRs are never blocked by upstream image CVEs.
+  * On `push` to `main`, `schedule`, and `workflow_dispatch`, Trivy uploads SARIF (`category: trivy-iac-config`) to populate the **Security → Code scanning** tab alongside CodeQL.
+* **How to Enable PR Blocking Later:**
+  * **On-Demand Testing:** Trigger **Actions → Trivy Security Scan (Images & IaC) → Run workflow** and check `fail_on_critical: true`.
+  * **Permanent Enforcement on PRs:** Set `FAIL_ON_CRITICAL: "true"` (or remove `if: github.event_name != 'pull_request'` on the SARIF upload step) in [`.github/workflows/trivy-scan.yml`](../.github/workflows/trivy-scan.yml) to fail PR checks whenever fixable `CRITICAL` vulnerabilities or IaC misconfigurations are introduced.
 
 ---
 
@@ -127,19 +189,29 @@ To support frequent cluster destroy and recreate cycles without running into Let
 
 ---
 
-To stretch your $300 GCP Free Trial, shut down the instances when you are not actively using the cluster and start them back up when needed.
+## Automated & Manual Instance Power Management (Cost Conservation)
 
-## Stop the Instances (Cost Conservation)
+To stretch your $300 GCP Free Trial, the cluster VMs are automatically stopped overnight and can also be controlled on demand via GitHub Actions or the `gcloud` CLI.
+
+### Nightly Auto-Shutdown & On-Demand Workflow
+
+1. **Nightly Shutdown & Manual Toggle ([`.github/workflows/stop-rke2-vms.yml`](../.github/workflows/stop-rke2-vms.yml)):**
+   * Runs every hour from **`23:00` to `06:00` (`Asia/Jerusalem`)** and stops any `RUNNING` `rke2-node-*` VMs automatically.
+   * Can also be triggered manually from **Actions → RKE2 VMs Power Management → Run workflow** with `action: stop` or `action: start`.
+2. **Auto-Start on Merge to `main` ([`.github/workflows/tofu-apply.yml`](../.github/workflows/tofu-apply.yml)):**
+   * Whenever an infrastructure PR merges to `main`, `tofu-apply.yml` automatically starts any `TERMINATED` `rke2-node-*` VMs before running `tofu apply` and cluster bootstrap.
+
+### Stop the Instances via CLI
 
 ```bash
 gcloud compute instances stop rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-west1-a
 ```
 
-*Note: You will still incur a small persistent disk storage fee (~$6.75/month total in `me-west1`) while the VMs are stopped.*
+*Note: You will still incur a persistent disk storage fee (~$14.52/month total for 330 GB `pd-standard` in `me-west1`) while the VMs are stopped.*
 
-## Start the Instances
+### Start the Instances via CLI
 
-Because `rke2-server.service` was enabled with `systemctl enable` and GCP preserves each VM's internal IP address across stops/starts, starting the instances automatically brings the RKE2 cluster, `cert-manager`, Argo CD, and the Cloudflare Tunnel back online:
+Because `rke2-server.service` and `glusterd.service` are enabled with `systemctl enable` and GCP preserves each VM's internal IP address across stops/starts, starting the instances automatically brings the RKE2 cluster, 3-node GlusterFS `/shared` volume, `cert-manager`, Argo CD, and the Cloudflare Tunnel back online:
 
 ```bash
 gcloud compute instances start rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-west1-a
@@ -147,7 +219,7 @@ gcloud compute instances start rke2-node-1 rke2-node-2 rke2-node-3 --zone=me-wes
 
 Once the VMs are running, re-open the IAP port-forwarding tunnel from [Guide 2: Step 5](02-gcp-rke2-cluster-setup.md#connecting-to-the-cluster-with-local-kubectl) if you want local `kubectl` access (the Argo CD Web UI at `https://argocd.<your-domain>` will reconnect automatically via `cloudflared`).
 
-## Check Instance Status
+### Check Instance Status
 
 Verify whether the nodes are `RUNNING` or `TERMINATED`:
 
