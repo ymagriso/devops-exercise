@@ -52,7 +52,7 @@ variable "var_disk_size" {
 }
 
 variable "shared_disk_size" {
-  description = "Dedicated shared persistent disk size in GB (mounted as /shared across all nodes via NFS)."
+  description = "Dedicated persistent disk size in GB per node for the 3-way replicated GlusterFS /shared volume."
   type        = number
   default     = 50
 }

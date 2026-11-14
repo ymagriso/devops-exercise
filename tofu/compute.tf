@@ -37,12 +37,20 @@ resource "google_compute_disk" "rke2_var_disk" {
   }
 }
 
-# Dedicated 50GB shared disk attached to rke2-node-1 and exported via NFS across all nodes
+# State migration: preserve existing rke2-shared-disk on rke2-node-1 as index [0]
+# when upgrading from single-node NFS to 3-node replicated GlusterFS.
+moved {
+  from = google_compute_disk.rke2_shared_disk
+  to   = google_compute_disk.rke2_shared_disk[0]
+}
+
+# Dedicated 50GB persistent disks on each node backing the 3-way replicated GlusterFS /shared volume
 resource "google_compute_disk" "rke2_shared_disk" {
-  name = "rke2-shared-disk"
-  type = "pd-standard"
-  zone = var.zone
-  size = var.shared_disk_size
+  count = var.node_count
+  name  = count.index == 0 ? "rke2-shared-disk" : "rke2-node-${count.index + 1}-shared"
+  type  = "pd-standard"
+  zone  = var.zone
+  size  = var.shared_disk_size
   labels = {
     managed-by = "opentofu"
     cluster    = "rke2"
@@ -77,12 +85,9 @@ resource "google_compute_instance" "rke2_node" {
     device_name = "var-disk"
   }
 
-  dynamic "attached_disk" {
-    for_each = count.index == 0 ? [google_compute_disk.rke2_shared_disk.id] : []
-    content {
-      source      = attached_disk.value
-      device_name = "shared-disk"
-    }
+  attached_disk {
+    source      = google_compute_disk.rke2_shared_disk[count.index].id
+    device_name = "shared-disk"
   }
 
   network_interface {
